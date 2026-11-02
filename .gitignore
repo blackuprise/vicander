@@ -1,0 +1,18 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/tmp/
+
+# Editor and local agent tooling
+/.idea/
+/.claude/
+/AGENTS.md
+/LEAN-CTX.md
+
+# Dialyzer
+/priv/plts/
