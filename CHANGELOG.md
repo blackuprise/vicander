@@ -3,7 +3,9 @@
 All notable changes to `vicander` (the `DDD.*` modules). The project follows
 [Semantic Versioning](https://semver.org); until 1.0, a minor version may change the API.
 
-## Unreleased
+## 0.1.1 - 2026-11-03
+
+The first version on Hex. `0.1.0` was only a git tag, and its CI failed on a formatting check.
 
 ### Added
 
