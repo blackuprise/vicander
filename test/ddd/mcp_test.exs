@@ -604,8 +604,8 @@ defmodule DDD.MCPTest do
             "note://by/due/not-a-date",
             "note://by/status/open/extra"
           ] do
-        assert %{"error" => %{"code" => -32_002}} = rpc(Server, "resources/read", %{"uri" => uri}),
-               uri
+        response = rpc(Server, "resources/read", %{"uri" => uri})
+        assert %{"error" => %{"code" => -32_002}} = response, uri
       end
     end
 
