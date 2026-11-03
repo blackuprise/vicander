@@ -1,10 +1,13 @@
 defmodule Vicander.MixProject do
   use Mix.Project
 
+  @version "0.1.1"
+  @source_url "https://github.com/blackuprise/vicander"
+
   def project do
     [
       app: :vicander,
-      version: "0.1.1",
+      version: @version,
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -60,13 +63,15 @@ defmodule Vicander.MixProject do
       name: "vicander",
       licenses: ["Apache-2.0"],
       files: ~w(lib .formatter.exs mix.exs README.md CHANGELOG.md LICENSE),
-      links: %{"GitHub" => "https://github.com/blackuprise/vicander"}
+      links: %{"GitHub" => @source_url, "Changelog" => @source_url <> "/blob/master/CHANGELOG.md"}
     ]
   end
 
   defp docs do
     [
       main: "readme",
+      source_url: @source_url,
+      source_ref: "v#{@version}",
       extras: ["README.md", "CHANGELOG.md"],
       groups_for_modules: [
         Model: [

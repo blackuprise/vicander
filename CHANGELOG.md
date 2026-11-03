@@ -55,7 +55,7 @@ The first version on Hex. `0.1.0` was only a git tag, and its CI failed on a for
   (`DDD.Dialect.Postgres`), or set with `config :vicander, dialect: MyDialect`. The outbox,
   dead letters, retention, projections, telemetry and health are Ecto queries over
   `DDD.Outbox.Event` and `DDD.Outbox.Delivery` instead of raw SQL. Event ids that the outbox
-  functions (`DDD.EventHandler.deliver/4`, `DDD.Outbox.Poller.claim/3`) take and return are now
+  functions (`DDD.EventHandler.deliver/4`, the poller's `claim/3`) take and return are now
   the UUID string, not the 16-byte binary. Leases and retry times use the database clock.
 * `DDD.Migration.drift/3` looks at the schemas on the search path, not at every table of that name.
 * `DDD.Outbox.Retention` (`mix vic.outbox.prune`, `retention:` of the supervisor).

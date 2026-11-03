@@ -47,7 +47,7 @@ What is not portable yet:
   is Postgres's `ILIKE`;
 * the generated outbox migration has partial indexes (`where:`), which MySQL does not have.
 
-Leases and retry times are compared with the **database's** clock (`DDD.Dialect.now/1`), so nodes
+Leases and retry times are compared with the **database's** clock (`c:DDD.Dialect.now/1`), so nodes
 whose clocks differ still agree on when a lease is over. Nested entities, value objects and lists
 of them are one `jsonb` column each.
 
