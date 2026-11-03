@@ -271,7 +271,7 @@ defmodule DDD.MCPTest do
     test "name and version default to the application's" do
       info = result(DDD.Test.MCPServer, "initialize", %{})["serverInfo"]
       assert info["name"] == "vicander"
-      assert info["version"] == "0.1.0"
+      assert info["version"] == to_string(Application.spec(:vicander, :vsn))
 
       # A server outside any application has no name or version of its own.
       assert result(ReadOnlyServer, "initialize", %{})["serverInfo"] ==
