@@ -17,3 +17,19 @@ config :vicander, DDD.TestRepo,
   # SQL queries are logged only with `SQL=1` (together with `LOG=1`).
   log: if(System.get_env("SQL"), do: :debug, else: false),
   pool_size: 10
+
+# `DB=mysql` points the same repo at MySQL, for the tests tagged `:mysql`:
+#
+#     docker run -d -e MYSQL_ROOT_PASSWORD=mysql -p 3306:3306 mysql:8.0
+#     DB=mysql mix test --only mysql
+if System.get_env("DB") == "mysql" do
+  config :vicander, :test_db, :mysql
+
+  config :vicander, DDD.TestRepo,
+    username: "root",
+    password: System.get_env("MYSQL_PASSWORD", "mysql"),
+    hostname: System.get_env("MYSQL_HOST", "127.0.0.1"),
+    port: String.to_integer(System.get_env("MYSQL_PORT", "3306"))
+else
+  config :vicander, :test_db, :postgres
+end

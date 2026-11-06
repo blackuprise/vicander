@@ -15,6 +15,21 @@ defmodule DDD.InMemoryRepository do
       {:ok, _} = MyApp.Test.OrderRepository.start_link()
   """
 
+  @doc false
+  # The entity as it is stored, and as `save` returns it, like the database adapter does: one
+  # version on, its pending events handed off (there is no outbox here, so they go nowhere), and
+  # `updated_at` set when it replaces one that was stored already (a new one keeps the time
+  # `new` gave it).
+  def saved(entity, expected, replaces?) do
+    bumped = entity |> Map.put(:version, expected + 1) |> without_events()
+    DDD.Schema.seal(if replaces?, do: DDD.Schema.touch(bumped), else: bumped)
+  end
+
+  defp without_events(%{__pending_events__: _} = aggregate),
+    do: %{aggregate | __pending_events__: []}
+
+  defp without_events(entity), do: entity
+
   defmacro __using__(opts) do
     port = Keyword.fetch!(opts, :port)
 
@@ -28,15 +43,29 @@ defmodule DDD.InMemoryRepository do
       end
 
       @impl unquote(port)
-      def find_by_id(id) do
+      def find_by_id(id), do: DDD.UnitOfWork.read(__MODULE__, id, fn -> __load__(id) end)
+
+      @doc false
+      def __load__(id) do
         case Agent.get(__MODULE__, &Map.get(&1, id)) do
           nil -> {:error, :not_found}
           entity -> {:ok, entity}
         end
       end
 
+      @doc false
+      def __load_many__(ids) do
+        for id <- ids, {:ok, entity} <- [__load__(id)], do: entity
+      end
+
+      @doc false
+      def __aggregate__, do: unquote(port).__repo_aggregate__()
+
       @impl unquote(port)
-      def save(entity) do
+      def save(entity), do: DDD.UnitOfWork.save(__MODULE__, entity, &__persist__/1)
+
+      @doc false
+      def __persist__(entity, opts \\ []) do
         if DDD.Schema.sealed?(entity) do
           id = DDD.Identity.key(entity)
 
@@ -51,7 +80,9 @@ defmodule DDD.InMemoryRepository do
             current? = if stored, do: actual == expected, else: expected == 0
 
             if current? do
-              saved = entity |> Map.put(:version, expected + 1) |> DDD.Schema.seal()
+              stamp? = stored != nil and Keyword.get(opts, :stamp, true)
+              saved = DDD.InMemoryRepository.saved(entity, expected, stamp?)
+
               {{:ok, saved}, Map.put(state, id, saved)}
             else
               error = DDD.Repository.Ecto.stale_error(entity.__struct__, id, expected, actual)
@@ -64,7 +95,10 @@ defmodule DDD.InMemoryRepository do
       end
 
       @impl unquote(port)
-      def delete(entity) do
+      def delete(entity), do: DDD.UnitOfWork.delete(__MODULE__, entity, &__remove__/1)
+
+      @doc false
+      def __remove__(entity) do
         id = DDD.Identity.key(entity)
         Agent.update(__MODULE__, &Map.delete(&1, id))
         :ok

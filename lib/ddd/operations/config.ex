@@ -15,6 +15,9 @@ defmodule DDD.Config do
     * `config :vicander, :dead_letters, ...` - what to do with events that gave up
       (`DDD.Outbox.DeadLetterPolicy`)
     * `config :vicander, :health, ...` - thresholds and projections (`DDD.Health`)
+    * `config :vicander, :repositories, [{MyApp.Order, MyApp.OrderRepository}, ...]` - the
+      repository of each aggregate, for `loads: MyApp.Order` on a command field
+      (`DDD.Command`). The repository is an adapter, or a port with `impl/0`.
   """
 
   @doc "The configured repo. Raises, saying how to configure it, when there is none."
@@ -33,6 +36,33 @@ defmodule DDD.Config do
             config :vicander, repo: MyApp.Repo
 
         or name the repo where it is used: `use DDD.Command, repo: MyApp.Repo`.
+        """
+    end
+  end
+
+  @doc """
+  The repository (an adapter, or a port with `impl/0`) configured for `aggregate` with
+  `config :vicander, :repositories`. Raises, saying how to configure it, when there is none.
+  """
+  @spec repository!(module()) :: module()
+  def repository!(aggregate) do
+    :vicander
+    |> Application.get_env(:repositories, [])
+    |> Map.new()
+    |> Map.fetch(aggregate)
+    |> case do
+      {:ok, repository} ->
+        repository
+
+      :error ->
+        raise ArgumentError, """
+        the framework does not know where to load #{inspect(aggregate)} from.
+
+        Name its repository once, for example in config/config.exs:
+
+            config :vicander, :repositories, [{#{inspect(aggregate)}, MyApp.MyRepository}]
+
+        or name the repository where it is used: `loads: MyApp.MyRepository`.
         """
     end
   end

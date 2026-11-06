@@ -147,7 +147,7 @@ defmodule DDD.EventHandler do
             :skipped
 
           :recorded ->
-            case run(handler, event) do
+            case run_in_unit_of_work(handler, event) do
               :ok -> :delivered
               {:reject, reason} -> repo.rollback({:rejected, reason})
               {:retry, reason} -> repo.rollback({:retry, reason})
@@ -174,6 +174,15 @@ defmodule DDD.EventHandler do
            message: "the handler's transaction was rolled back",
            context: %{handler: handler}
          )}
+    end
+  end
+
+  # What the handler saves through repositories is written once, just before the delivery
+  # transaction commits. A failed write is a failure of the system: the event is retried.
+  defp run_in_unit_of_work(handler, event) do
+    case DDD.UnitOfWork.execute(fn -> run(handler, event) end, &(&1 == :ok)) do
+      {:ok, outcome} -> outcome
+      {:flush_failed, error} -> {:retry, error}
     end
   end
 

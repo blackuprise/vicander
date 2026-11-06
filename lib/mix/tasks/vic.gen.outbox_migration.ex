@@ -18,7 +18,23 @@ defmodule Mix.Tasks.Vic.Gen.OutboxMigration do
     Mix.shell().info([:green, "* created ", :reset, path])
   end
 
+  # A partial index speeds up the poller's and the dead letters' queries on Postgres. MySQL has
+  # none: it does without, and says so in the migration.
+  defp partial_index(repo, columns, where, name) do
+    if repo.__adapter__() == Ecto.Adapters.Postgres do
+      pad = String.duplicate(" ", 13)
+
+      "create index(:domain_events, #{columns},\n" <>
+        "#{pad}where: #{inspect(where)},\n" <>
+        "#{pad}name: :#{name}\n" <> String.duplicate(" ", 11) <> ")"
+    else
+      "# #{name}: a partial index, which MySQL does not have"
+    end
+  end
+
   defp migration_content do
+    repo = DDD.Config.repo!()
+
     """
     defmodule #{inspect(DDD.Config.repo!())}.Migrations.CreateDomainEvents do
       use Ecto.Migration
@@ -53,10 +69,7 @@ defmodule Mix.Tasks.Vic.Gen.OutboxMigration do
         create index(:domain_events, [:aggregate_type])
         create index(:domain_events, [:occurred_at])
 
-        create index(:domain_events, [:occurred_at],
-                 where: "published_at IS NULL AND failed_at IS NULL",
-                 name: :domain_events_pending_index
-               )
+        #{partial_index(repo, "[:occurred_at]", "published_at IS NULL AND failed_at IS NULL", "domain_events_pending_index")}
 
         # Which handler already processed which event: a retry skips handlers that succeeded.
         create table(:event_deliveries, primary_key: false) do
@@ -72,10 +85,7 @@ defmodule Mix.Tasks.Vic.Gen.OutboxMigration do
 
         create unique_index(:event_deliveries, [:event_id, :handler])
 
-        create index(:domain_events, [:failed_at],
-                 where: "failed_at IS NOT NULL AND resolved_at IS NULL",
-                 name: :domain_events_unresolved_dead_letters_index
-               )
+        #{partial_index(repo, "[:failed_at]", "failed_at IS NOT NULL AND resolved_at IS NULL", "domain_events_unresolved_dead_letters_index")}
       end
     end
     """

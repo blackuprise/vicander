@@ -1,13 +1,16 @@
 defmodule Vicander.MixProject do
   use Mix.Project
 
-  @version "0.1.1"
+  @version "0.2.0"
   @source_url "https://github.com/blackuprise/vicander"
 
   def project do
     [
       app: :vicander,
       version: @version,
+      # `DB=mysql` builds the tests against MySQL (the test repo's adapter is chosen when it
+      # compiles), so it gets a build directory of its own.
+      build_path: if(System.get_env("DB") == "mysql", do: "_build_mysql", else: "_build"),
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -48,6 +51,7 @@ defmodule Vicander.MixProject do
       # dependency. The database driver is the application's choice: it adds `postgrex`.
       {:ecto_sql, "~> 3.11"},
       {:postgrex, ">= 0.0.0", only: :test},
+      {:myxql, ">= 0.0.0", only: :test},
       {:ex_doc, "~> 0.30", only: :dev, runtime: false},
       # Static checks, development only: `mix credo --strict` and `mix dialyzer`.
       {:credo, "~> 1.7", only: :dev, runtime: false},

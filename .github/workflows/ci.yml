@@ -46,6 +46,46 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix test --cover
 
+  # The same behaviour on MySQL 8: the dialect, the batched writes, the outbox (test/mysql).
+  mysql:
+    runs-on: ubuntu-latest
+    name: MySQL ${{ matrix.mysql }}
+    env:
+      DB: mysql
+
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ["8.0", "8.4"]
+
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql }}
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pmysql" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19"
+          otp-version: "28"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build_mysql
+          key: mysql-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get
+      - run: mix test --only mysql
+
   # Static checks, on one version: they don't depend on the database.
   static:
     runs-on: ubuntu-latest

@@ -119,7 +119,7 @@ defmodule DDD.Outbox.DeadLetters do
   @doc false
   # Reserve unresolved dead letters for `lease_ms` so two nodes don't handle the same one.
   def claim_unresolved(repo, limit, lease_ms) do
-    Event.claim(repo, lease_ms, [asc: :failed_at], @fields, [], fn now ->
+    Event.claim(repo, lease_ms, @fields, [], fn now ->
       from(e in Event,
         where:
           not is_nil(e.failed_at) and is_nil(e.resolved_at) and

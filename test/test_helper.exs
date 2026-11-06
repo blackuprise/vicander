@@ -8,4 +8,11 @@
 
 Process.unlink(supervisor)
 
-ExUnit.start()
+# `mix test --only stress` runs the slow concurrency tests (test/ddd/transaction_stress_test.exs).
+# `DB=mysql mix test --only mysql` runs the MySQL tests (test/mysql); with `DB=mysql` the other
+# tests, which use Postgres SQL, are left out.
+if System.get_env("DB") == "mysql" do
+  ExUnit.start(include: [:mysql], exclude: [:test])
+else
+  ExUnit.start(exclude: [:stress, :mysql])
+end

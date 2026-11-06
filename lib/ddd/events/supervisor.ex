@@ -18,7 +18,7 @@ defmodule DDD.Supervisor do
       event with no subscribed handler counts as delivered. Default: none.
     * `:poller` - options for `DDD.Outbox.Poller` (`:interval_ms`, `:batch_size`, ...), or
       `false` for no poller and no dead-letter handler: what a test or a web-only node wants.
-      Default: `[]`, which polls every 500 ms in batches of 100.
+      Default: `[]`, which polls in batches of 20, sleeping 3 s only when there is nothing left to deliver.
     * `:retention` - `[older_than_days: 30]` (and optionally `:every_ms`) to prune published
       events from the outbox on a timer (`DDD.Outbox.Retention`). Default: never prune.
     * `:repo` - another repo than the configured one
@@ -54,7 +54,7 @@ defmodule DDD.Supervisor do
   defp outbox(repo, poller) do
     [
       {DDD.Outbox.Poller,
-       Keyword.merge([interval_ms: 500, batch_size: 100], poller) |> Keyword.put(:repo, repo)},
+       Keyword.merge([interval_ms: 3_000, batch_size: 20], poller) |> Keyword.put(:repo, repo)},
       {DDD.Outbox.DeadLetterHandler, repo: repo}
     ]
   end

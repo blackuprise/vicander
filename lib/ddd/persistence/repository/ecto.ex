@@ -179,7 +179,11 @@ defmodule DDD.Repository.Ecto do
 
       # ── find_by_id ─────────────────────────────────────────────────
       @impl port
-      def find_by_id(id) do
+      def find_by_id(id), do: DDD.UnitOfWork.read(__MODULE__, id, fn -> __load__(id) end)
+
+      @doc false
+      # The read itself, without the unit of work (see `DDD.UnitOfWork`).
+      def __load__(id) do
         case unquote(ecto_repo).get(unquote(schema_module), id) do
           nil -> {:error, :not_found}
           record -> {:ok, to_domain(record)}
@@ -189,18 +193,55 @@ defmodule DDD.Repository.Ecto do
         Ecto.Query.CastError -> {:error, :not_found}
       end
 
+      @doc false
+      # Several aggregates by id in one query (see `DDD.UnitOfWork`, which preloads with it). An
+      # id that is not even of the right type ("not-a-uuid") names nothing.
+      def __load_many__(ids) do
+        import Ecto.Query
+
+        pk = unquote(pk_field)
+        type = unquote(schema_module).__schema__(:type, pk)
+        adapter = unquote(ecto_repo).__adapter__()
+
+        # `cast` alone lets any string through as a `:binary_id`; the adapter's dump is what
+        # refuses "not-a-uuid".
+        valid =
+          for id <- ids,
+              {:ok, cast} <- [Ecto.Type.cast(type, id)],
+              {:ok, _dumped} <- [Ecto.Type.adapter_dump(adapter, type, cast)],
+              do: cast
+
+        if valid == [] do
+          []
+        else
+          from(r in unquote(schema_module), where: field(r, ^pk) in ^valid)
+          |> unquote(ecto_repo).all()
+          |> Enum.map(&to_domain/1)
+        end
+      end
+
+      @doc false
+      def __aggregate__, do: unquote(aggregate)
+
       # ── save: aggregate upsert + outbox in one transaction ─────────
       @impl port
-      def save(aggregate) do
+      def save(aggregate), do: DDD.UnitOfWork.save(__MODULE__, aggregate, &__persist__/1)
+
+      @doc false
+      # The write itself, at once (see `DDD.UnitOfWork`, which calls it at the end of a command).
+      def __persist__(aggregate, opts \\ []) do
         name = inspect(unquote(aggregate))
         id = DDD.Identity.key(aggregate)
 
         if DDD.Schema.sealed?(aggregate) do
           events = length(aggregate.__pending_events__)
 
-          case do_save(aggregate) do
+          case do_save(aggregate, opts) do
             {:ok, _} = ok ->
-              Logger.info("[repo] saved #{name} #{id} (#{events} event(s) written to the outbox)")
+              Logger.debug(
+                "[repo] saved #{name} #{id} (#{events} event(s) written to the outbox)"
+              )
+
               ok
 
             {:error, _} = error ->
@@ -213,7 +254,7 @@ defmodule DDD.Repository.Ecto do
         end
       end
 
-      defp do_save(aggregate) do
+      defp do_save(aggregate, opts) do
         {events, clean} = unquote(aggregate).pop_events(aggregate)
         id = DDD.Identity.key(clean)
         params = from_domain(clean)
@@ -236,6 +277,12 @@ defmodule DDD.Repository.Ecto do
 
               record ->
                 expected = clean.version || 0
+                # `stamp: false`: a unit of work has set `updated_at` already, and the caller
+                # got that value back from `save`.
+                params =
+                  if Keyword.get(opts, :stamp, true),
+                    do: DDD.Repository.Ecto.touch(params, unquote(Macro.escape(field_types))),
+                    else: params
 
                 if (record.version || 0) != expected do
                   unquote(ecto_repo).rollback(
@@ -278,23 +325,15 @@ defmodule DDD.Repository.Ecto do
               )
 
             {:ok, record} ->
-              agg_type = unquote(aggregate) |> Module.split() |> Enum.join(".")
+              inserted_at = NaiveDateTime.truncate(NaiveDateTime.utc_now(), :second)
 
-              Enum.each(events, fn event ->
-                row = %{
-                  id: event.event_id,
-                  event_type: event.__struct__ |> Module.split() |> Enum.join("."),
-                  # The event is linked to its aggregate by emit_event/2; fall back to this one.
-                  aggregate_id: event.aggregate_id || to_string(id),
-                  aggregate_type: event.aggregate_type || agg_type,
-                  payload: event |> Map.from_struct() |> stringify_keys(),
-                  occurred_at: DDD.Dialect.usec(event.occurred_at),
-                  published_at: nil,
-                  inserted_at: NaiveDateTime.truncate(NaiveDateTime.utc_now(), :second)
-                }
+              rows =
+                Enum.map(events, fn event ->
+                  DDD.Repository.Ecto.event_row(unquote(aggregate), id, event, inserted_at)
+                end)
 
-                unquote(ecto_repo).insert_all(DDD.Outbox.Event, [row])
-              end)
+              # One statement for all of the aggregate's events, not one round trip each.
+              if rows != [], do: unquote(ecto_repo).insert_all(DDD.Outbox.Event, rows)
 
               to_domain(record)
           end
@@ -303,7 +342,10 @@ defmodule DDD.Repository.Ecto do
 
       # ── delete ─────────────────────────────────────────────────────
       @impl port
-      def delete(aggregate) do
+      def delete(aggregate), do: DDD.UnitOfWork.delete(__MODULE__, aggregate, &__remove__/1)
+
+      @doc false
+      def __remove__(aggregate) do
         id = DDD.Identity.key(aggregate)
 
         case unquote(ecto_repo).get(unquote(schema_module), id) do
@@ -315,6 +357,24 @@ defmodule DDD.Repository.Ecto do
             Logger.info("[repo] deleted #{inspect(unquote(aggregate))} #{id}")
             :ok
         end
+      end
+
+      @doc false
+      # Everything a unit of work collected for this adapter, written in a few statements (see
+      # `DDD.Repository.Ecto.Flush`); `:unsupported` when the database has no batched writes.
+      def __flush__(changes, opts \\ []) do
+        DDD.Repository.Ecto.Flush.run(
+          %{
+            repo: unquote(ecto_repo),
+            schema: unquote(schema_module),
+            aggregate: unquote(aggregate),
+            pk: unquote(pk_field),
+            from_domain: &from_domain/1,
+            cast: &cast_record/2
+          },
+          changes,
+          opts
+        )
       end
 
       # ── Auto-generated find_by_* ───────────────────────────────────
@@ -329,6 +389,8 @@ defmodule DDD.Repository.Ecto do
         @impl port
         def unquote(fn_name)(unquote_splicing(fn_args)) do
           import Ecto.Query
+
+          DDD.UnitOfWork.guard_query!(__MODULE__, unquote(fn_name))
 
           query =
             Enum.reduce(
@@ -367,19 +429,31 @@ defmodule DDD.Repository.Ecto do
       `:limit`. See `DDD.Listing` and `DDD.Filter`.
       """
       @impl port
-      def list(opts \\ []), do: DDD.Listing.list(__listing__(), opts)
+      def list(opts \\ []) do
+        DDD.UnitOfWork.guard_query!(__MODULE__, :list)
+        DDD.Listing.list(__listing__(), opts)
+      end
 
       @doc "One numbered `DDD.Page` of the matching aggregates. See `DDD.Listing`."
       @impl port
-      def page(opts \\ []), do: DDD.Listing.page(__listing__(), opts)
+      def page(opts \\ []) do
+        DDD.UnitOfWork.guard_query!(__MODULE__, :page)
+        DDD.Listing.page(__listing__(), opts)
+      end
 
       @doc "One `DDD.Slice` (keyset pagination, no totals) of the matching aggregates."
       @impl port
-      def slice(opts \\ []), do: DDD.Listing.slice(__listing__(), opts)
+      def slice(opts \\ []) do
+        DDD.UnitOfWork.guard_query!(__MODULE__, :slice)
+        DDD.Listing.slice(__listing__(), opts)
+      end
 
       @doc "How many aggregates match `:filter` / `:spec`."
       @impl port
-      def count(opts \\ []), do: DDD.Listing.count(__listing__(), opts)
+      def count(opts \\ []) do
+        DDD.UnitOfWork.guard_query!(__MODULE__, :count)
+        DDD.Listing.count(__listing__(), opts)
+      end
 
       # ── Domain ↔ Schema mapping ────────────────────────────────────
       @doc "Convert Ecto schema record to a sealed domain aggregate struct."
@@ -437,14 +511,6 @@ defmodule DDD.Repository.Ecto do
             else: params
 
         Map.merge(params, Map.new(overrides))
-      end
-
-      defp stringify_keys(map) when is_map(map) do
-        Map.new(map, fn {k, v} ->
-          key = if is_atom(k), do: Atom.to_string(k), else: k
-          val = if is_map(v) and not is_struct(v), do: stringify_keys(v), else: v
-          {key, val}
-        end)
       end
 
       defoverridable find_by_id: 1, save: 1, delete: 1, to_domain: 1, from_domain: 1
@@ -593,6 +659,43 @@ defmodule DDD.Repository.Ecto do
           "#{inspect(expected)}, found #{inspect(actual)}); reload it and try again",
       details: %{id: to_string(id), expected_version: expected, actual_version: actual}
     )
+  end
+
+  @doc false
+  # `params` of an aggregate that is being updated, with `updated_at` set to now (when it has one).
+  def touch(params, field_types) do
+    case field_types do
+      %{updated_at: type} ->
+        Map.put(params, :updated_at, dump_field(type, DateTime.utc_now()))
+
+      _ ->
+        params
+    end
+  end
+
+  @doc false
+  # A row of the `domain_events` outbox for `event`, emitted by the aggregate `aggregate`
+  # (a module) with identity `id`.
+  def event_row(aggregate, id, event, inserted_at) do
+    %{
+      id: event.event_id,
+      event_type: event.__struct__ |> Module.split() |> Enum.join("."),
+      # The event is linked to its aggregate by emit_event/2; fall back to this one.
+      aggregate_id: event.aggregate_id || to_string(id),
+      aggregate_type: event.aggregate_type || aggregate |> Module.split() |> Enum.join("."),
+      payload: event |> Map.from_struct() |> stringify_keys(),
+      occurred_at: DDD.Dialect.usec(event.occurred_at),
+      published_at: nil,
+      inserted_at: inserted_at
+    }
+  end
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {k, v} ->
+      key = if is_atom(k), do: Atom.to_string(k), else: k
+      val = if is_map(v) and not is_struct(v), do: stringify_keys(v), else: v
+      {key, val}
+    end)
   end
 
   @doc false

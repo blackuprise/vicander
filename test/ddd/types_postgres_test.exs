@@ -142,6 +142,99 @@ defmodule DDD.TypesPostgresTest do
     assert id == order.id
   end
 
+  test "every field type survives a batched insert and a batched update" do
+    {:ok, total} = DDD.Money.of("19.99", "EUR")
+    {:ok, home} = Address.new(street: "Main 1")
+
+    new_order = fn n ->
+      {:ok, order} =
+        Order.new(
+          note: "note #{n}",
+          count: n,
+          ratio: 0.5,
+          flag: true,
+          kind: :special,
+          status: :paid,
+          tags: ["x", "y"],
+          scores: [Decimal.new("1.5")],
+          kinds: [:b, :a],
+          customer_id: UUID.uuid4(),
+          total: total,
+          prices: %{"base" => total},
+          ship_to: home,
+          billing: [home, home],
+          amount: Decimal.new("123.456"),
+          opened_on: ~D[2030-01-02],
+          opens_at: ~T[10:11:12.123456],
+          seen: ~N[2030-01-02 10:11:12.250000],
+          paid_at: ~U[2030-01-02 10:11:12Z],
+          blob: <<0, 255, 7>>,
+          meta: [1, %{"a" => "b"}],
+          bag: %{"k" => 1}
+        )
+
+      order
+    end
+
+    orders = Enum.map(1..5, new_order)
+
+    # One flush inserts all five.
+    assert {:ok, _} =
+             DDD.UnitOfWork.run(fn ->
+               for order <- orders, do: {:ok, _} = PgOrderRepository.save(order)
+               {:ok, :saved}
+             end)
+
+    for order <- orders do
+      assert {:ok, %{version: 1, count: count, tags: ["x", "y"]}} =
+               PgOrderRepository.find_by_id(order.id)
+
+      assert count == String.to_integer(String.replace(order.note, "note ", ""))
+    end
+
+    # One flush updates all five; some fields go back to nothing, which must be written.
+    assert {:ok, _} =
+             DDD.UnitOfWork.run(fn ->
+               for order <- orders do
+                 {:ok, loaded} = PgOrderRepository.find_by_id(order.id)
+
+                 {:ok, changed} =
+                   Order.update(loaded,
+                     note: nil,
+                     tags: [],
+                     total: nil,
+                     ship_to: nil,
+                     meta: nil,
+                     paid_at: nil,
+                     amount: Decimal.new("0.5"),
+                     bag: %{"k" => 2}
+                   )
+
+                 {:ok, _} = PgOrderRepository.save(changed)
+               end
+
+               {:ok, :saved}
+             end)
+
+    for order <- orders do
+      assert {:ok, found} = PgOrderRepository.find_by_id(order.id)
+      assert found.version == 2
+      assert found.note == nil
+      assert found.tags == []
+      assert found.total == nil
+      assert found.ship_to == nil
+      assert found.meta == nil
+      assert found.paid_at == nil
+      assert Decimal.eq?(found.amount, "0.5")
+      assert found.bag == %{"k" => 2}
+      # What was not touched is untouched.
+      assert found.kinds == [:b, :a]
+      assert found.billing |> length() == 2
+      assert found.opens_at == ~T[10:11:12.123456]
+      assert found.blob == <<0, 255, 7>>
+    end
+  end
+
   test "empty values come back as the declared defaults" do
     {:ok, order} = Order.new([])
     assert {:ok, _} = PgOrderRepository.save(order)

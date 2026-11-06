@@ -45,7 +45,8 @@ defmodule DDD.Telemetry do
             [:ddd, :command],
             [:ddd, :query],
             [:ddd, :handler, :deliver],
-            [:ddd, :projection, :rebuild]
+            [:ddd, :projection, :rebuild],
+            [:ddd, :unit_of_work, :flush]
           ],
           suffix <- [:start, :stop, :exception],
           do: prefix ++ [suffix]

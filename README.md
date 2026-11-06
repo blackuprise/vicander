@@ -14,8 +14,8 @@ Field rules and specification invariants run on `new`, `update` and every busine
 # mix.exs
 def deps do
   [
-    {:vicander, "~> 0.1"},
-    # the database driver is yours to choose; PostgreSQL is the one the framework supports
+    {:vicander, "~> 0.2"},
+    # the database driver is yours to choose; PostgreSQL and MySQL 8 are supported
     {:postgrex, ">= 0.0.0"}
   ]
 end
@@ -628,6 +628,414 @@ difference as a new migration. It never overwrites earlier migrations.
 Check for drift between aggregates and the real tables in a test:
 `DDD.Migration.drift(MyApp.TodoList, "todo_lists", MyApp.Repo)`.
 
+## Unit of work
+
+A command runs inside a **unit of work**. Inside it the repositories remember what the command
+loaded and saved, and write the changes **once, when `execute/1` returns `{:ok, _}`**, just
+before the command's transaction commits.
+
+```elixir
+def execute(%{order_id: id}) do
+  with {:ok, order} <- Orders.find_by_id(id),      # loaded: one query
+       {:ok, order} <- Order.ship(order),
+       {:ok, order} <- Orders.save(order),         # recorded, not written yet
+       {:ok, again} <- Orders.find_by_id(id) do    # no query: the same order, at its new version
+    {:ok, again}
+  end
+end                                                # written here, then the transaction commits
+```
+
+* `find_by_id` loads an aggregate once. Asking again returns it without a query, including one
+  you have just saved (at the version it will have) and `{:error, :not_found}` for one you have
+  deleted.
+* `save` and `delete` return at once. `save` returns the aggregate with the version it will have
+  once written. Saving the same aggregate twice writes it once, with all its events.
+* Only what changed is written. An aggregate that was loaded and left as it was costs nothing.
+* If a write fails, the command returns that error and the transaction rolls back. A version
+  conflict is still `:stale_aggregate`, so `retry_on_conflict` works as before, but it now shows
+  at the end of the command, not at the `save` call. Everything that lost is reported at once:
+  `error.details` has the usual `id`, `expected_version` and `actual_version` of the first one,
+  and `conflicts`, a list of all of them (`actual_version` is `nil` for a row that is gone).
+* A command called from inside another command joins its unit of work; the outermost one writes.
+  A transactional event handler gets one per delivery. Outside both, nothing changes: `save`
+  writes at once.
+* `use DDD.Command, unit_of_work: false` runs a command without one. `DDD.UnitOfWork.run/1`
+  opens one around any other code.
+
+### Deadlocks and `flush_order: :sorted`
+
+Two commands that change the same rows can wait for each other, and the database then aborts
+one of them (Postgres `deadlock_detected`, MySQL error 1213). That transaction is rolled back and
+the command returns an infrastructure error with code `:deadlock_detected`, which
+`retry_on_conflict` retries just like `:stale_aggregate`, with the same random wait. A command
+without `retry_on_conflict` gets the error and decides for itself; nothing is retried behind its
+back. Only the dialect's idea of "worth retrying" is used: a deadlock, or a serialization failure
+on Postgres. Any other database error is still raised.
+
+By default the writes go in the order they were recorded. If two commands that change the same
+rows in different orders deadlock often, ask for an order they all share:
+
+```elixir
+use DDD.Command, retry_on_conflict: 3, flush_order: :sorted
+```
+
+The tables are then written in name order and the rows of each in key order, and the rows about
+to change are locked in key order first (one more statement per repository). Commands that all
+use `:sorted` cannot deadlock each other over the rows they write. If a command joins another
+unit of work and asks for `:sorted`, the whole of it is sorted.
+
+### Loading up front with `loads:`
+
+A command that works on many aggregates would read them one `find_by_id` at a time. Declare
+where their ids are and they are read together, before `execute/1`:
+
+```elixir
+defmodule MyApp.Commands.ShipOrders do
+  use DDD.Command
+
+  command do
+    field :order_ids, {:array, :string}, required: true, loads: MyApp.Order
+    field :carrier_id, {:ref, MyApp.Carrier}, required: true, loads: true
+  end
+
+  @impl DDD.Command
+  def execute(%{order_ids: ids, carrier_id: carrier_id}) do
+    {:ok, carrier} = Carriers.find_by_id(carrier_id)     # already loaded: no query
+
+    Enum.reduce_while(ids, {:ok, []}, fn id, {:ok, shipped} ->
+      with {:ok, order} <- Orders.find_by_id(id),         # already loaded: no query
+           {:ok, order} <- Order.ship(order, carrier),
+           {:ok, order} <- Orders.save(order) do
+        {:cont, {:ok, [order | shipped]}}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+end
+```
+
+That command, for 20 orders, runs 5 statements: one read of the orders, one of the carrier, one
+`UPDATE` for all 20 orders and one `INSERT` of their events, inside the transaction. Without
+`loads:` it is the same code with 20 more reads.
+
+`loads:` names the aggregate, and where it is stored is configured once:
+
+```elixir
+config :vicander, :repositories, [
+  {MyApp.Order, MyApp.OrderRepository},     # an adapter, or a port with impl/0
+  {MyApp.Carrier, MyApp.CarrierRepository}
+]
+```
+
+On a `{:ref, Aggregate}` field the aggregate is already named, so `loads: true` is enough. A
+repository, a port or an adapter can be named directly instead (`loads: MyApp.OrderRepository`).
+
+The aggregates go into the unit of work, not into a variable: `execute/1` keeps calling
+`find_by_id`. An id that does not exist fails the command before it starts, with a business
+error (`code: :not_found`, `entity`, the first missing id as `entity_id`, and the `field` and all
+`missing_ids` in `details`), so nothing has been done by then. `nil` and `[]` load nothing. Ids
+that only turn up while the command runs (`order.customer_id`) are not declared; they load when
+asked for.
+
+### What is written, and how
+
+On Postgres the changes of one repository are written in a handful of statements, however many
+aggregates there are: one `INSERT` for the new ones, one `UPDATE ... FROM (VALUES ...)` for the
+changed ones, one `DELETE` for the removed ones, and one `INSERT` of all their events into the
+outbox. Each update and delete is guarded by the version the aggregate was loaded at, so a row
+that someone else changed is not touched and is reported as a conflict.
+
+An aggregate is written when a field differs from what was loaded. One that was loaded and left
+as it was costs nothing. One that only emitted events (`Order.emit_event/2` called directly,
+with no field changed) is not rewritten, but its version is checked, so the event is not
+recorded for a state that is out of date. Note that every operation (`defop`) bumps `updated_at`,
+so an aggregate changed by an operation counts as changed.
+
+A database without batched writes is written one aggregate at a time; the rules above hold.
+`[:ddd, :unit_of_work, :flush]` is a telemetry span, emitted once per flush that wrote something.
+Its stop event measures `inserted`, `updated`, `checked`, `deleted`, `events`, `statements`, and,
+for the whole unit of work, `loaded` (aggregates read from the database) and `hits` (`find_by_id`
+calls answered from memory).
+
+### Reads that are not by id
+
+There is no `flush`. The database does not have your unwritten changes, so a query by anything
+other than the id (`find_by_*`, `list`, `page`, `slice`, `count`) **raises
+`DDD.UnitOfWork.PendingChangesError` once the command has saved or deleted something**, rather
+than return an answer that is quietly wrong.
+
+```elixir
+with {:ok, order} <- Orders.find_by_id(id),
+     [] <- Orders.find_by_reference(order.reference),   # fine: nothing is pending yet
+     {:ok, order} <- Orders.save(order),
+     do: Orders.find_by_reference(order.reference)      # raises: the save is not written yet
+```
+
+Run the query before the first `save`, or split the work into two commands (the second can be
+started by an event). Reads by id are always fine.
+
+**What cannot be detected:** code that goes around the repositories (`Repo.query!`, `Repo.all`
+on your own schema) reads the database and does not see the unwritten changes.
+
+### Which commands fail, and how to split them
+
+A command may save and delete as many aggregates as it likes; that is what the unit of work is
+for. Only a **query that is not by id, after a save**, is a problem.
+
+The guard looks at the whole unit of work, not at one repository: once **any** aggregate in it
+has been saved (new or changed) or deleted, **every** later query that is not by id raises
+`PendingChangesError`, even on another repository and even if the query could not have touched
+what was saved. The command fails, its transaction rolls back, and `retry_on_conflict` does not
+retry it: the error is a bug in the command, not a conflict. This is deliberate, so a command
+that works on a test database cannot start giving quietly wrong answers on a busy one.
+
+Note that a command called by another command shares its unit of work, so the rule applies to a
+**chain**: a step's saves count for every step after it.
+
+| What the command does, in order                                  | Result   |
+|------------------------------------------------------------------|----------|
+| `save` A, `save` B, `save` C (any repositories, any number)      | works: saves never raise; all are written together at the end |
+| `save` the same aggregate twice                                  | works: written once, with all its events |
+| `find_by_id`, `save`, `find_by_id` (same or another aggregate)   | works: by id, answered from what was saved |
+| `find_by_*` / `list` / `count`, then `save`                      | works: nothing is pending yet |
+| `find_by_*`, `save`, then `find_by_*` again                      | **raises** |
+| `save` A, then `list` on another repository                      | **raises** |
+| `delete`, then `count`                                           | **raises** |
+| `save` an aggregate that did not change, then query              | **raises**: the save is recorded even if nothing is written. Do not save what you did not change |
+| command 1 saves, command 2 (chained inside) queries              | **raises** |
+| command 1 saves and returns, command 2 queries (two calls)       | works: command 1 committed |
+| `Repo.all` / `Repo.query!` after a save                           | no error, **stale answer** |
+
+(The in-memory repository, `DDD.InMemoryRepository`, is not yet guarded the same way: a command
+that saves and then queries passes against it and raises against Ecto. Test such a command
+against the database repository.)
+
+#### Rewriting a command so it works
+
+In order of preference:
+
+1. **Query first, then change.** Almost every failing command only needs the answer *before* it
+   changes anything. Move the `find_by_*`, `list` or `count` to the top of `execute/1`, or into
+   the `loads:` of the command. This is free and keeps one transaction.
+
+   ```elixir
+   # raises: the save comes before the query
+   with {:ok, list} <- Lists.find_by_id(id),
+        {:ok, list} <- Lists.save(TodoList.add_item(list, title)),
+        {:ok, lists} <- Lists.find_by_owner_id(list.owner_id), do: ...
+
+   # works: ask first
+   with {:ok, list} <- Lists.find_by_id(id),
+        {:ok, lists} <- Lists.find_by_owner_id(list.owner_id),
+        {:ok, list} <- Lists.save(TodoList.add_item(list, title)), do: ...
+   ```
+
+2. **Use ids instead of queries.** If the later step only needs something you have just
+   created, pass the id along and read it with `find_by_id`; that is always answered from the
+   unit of work. This is why chaining `RegisterUser`, `CreateList` and `AddItem` works.
+3. **Split into two commands connected by an event.** When the second step must see the first
+   one's committed result (a count, a list, a search), the first command emits an event and a
+   handler calls the second command once the first has committed. Each step is its own
+   transaction, retried on its own, and the second runs only if the first succeeded. You give
+   up all-or-nothing across the two; the outbox delivers at least once, so make the second
+   command safe to run twice.
+4. **Run two commands one after the other**, from whoever drives them (an HTTP handler, a job).
+   The first commits, so the second sees its work. Use this when the caller needs both results
+   at once and can accept that the first may succeed and the second fail.
+5. **Compute it in memory.** If the "query" is really "how many items does this list have now",
+   read the aggregate (by id) and look at its fields; the value object you just changed already
+   has the answer.
+
+#### A worked example: discounts from money spent
+
+A calculation can be as complex as you like and still be one command in one transaction, as
+long as it follows one shape: **read everything, decide, then write**. Take a nightly job that
+gives each customer a discount tier from what they spent in the last 90 days. Computing
+"what they spent" is a query over orders (not by id), so it must come before the first save.
+
+```elixir
+defmodule MyApp.Commands.ApplyDiscounts do
+  use DDD.Command
+
+  command do
+    # One page of customers; the job starts one command per page.
+    field :user_ids, {:array, :string}, required: true, loads: MyApp.User
+    field :since, :datetime, required: true
+  end
+
+  @impl DDD.Command
+  def execute(%{user_ids: ids, since: since}) do
+    # 1. READ. Queries are fine: nothing has been saved yet.
+    spent = Orders.total_spent_by_user(ids, since)        # %{user_id => amount}, one query
+
+    # 2. DECIDE. Plain Elixir, any amount of logic; no database involved.
+    #    (the customers were loaded by `loads:`, so `find_by_id` costs no query)
+    changes =
+      Enum.flat_map(ids, fn id ->
+        {:ok, user} = Users.find_by_id(id)
+        tier = tier_for(Map.get(spent, id, 0))
+
+        if tier == user.tier do
+          []                                   # unchanged: not saved, so not written
+        else
+          {:ok, changed} = User.change_tier(user, tier)
+          [changed]
+        end
+      end)
+
+    # 3. WRITE. As many saves as you like: one batch, one transaction, at the end.
+    Enum.reduce_while(changes, {:ok, []}, fn changed, {:ok, saved} ->
+      case Users.save(changed) do
+        {:ok, user} -> {:cont, {:ok, [user | saved]}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+end
+```
+
+(`total_spent_by_user` is a query you define on the orders port; `tier_for` and
+`User.change_tier/2` are your own.) If one customer was changed by someone else meanwhile, the
+whole page is reported as `:stale_aggregate` and, with `retry_on_conflict`, run again on fresh
+data.
+
+**When the calculation needs the database after it has written.** Say that after changing the
+tiers you must rank all customers by what they now pay, and the ranking is a query that depends
+on the new tiers. That query would be after a save, so it raises. Three ways out, in order of
+preference:
+
+1. **Make the query not depend on the write.** Almost always the ranking can be computed from
+   data you already have: `spent` and the tiers you just decided are all in memory. Compute the
+   ranking in step 2, before saving. The command stays batched and in one transaction.
+2. **Split in two, connected by an event.** The first command applies the tiers and emits
+   `DiscountsApplied`; a handler runs a second command that builds the ranking from the
+   committed data. Each part has its own transaction and retry. You give up all-or-nothing
+   across the two parts, and the second command must be safe to run twice.
+3. **Turn the unit of work off for this one command: `use DDD.Command, unit_of_work: false`.**
+   It is still **one transaction around the whole command**, but every `save` is now written
+   at once inside it, so a later query sees it (this is how commands worked before the unit of
+   work existed). It costs the batching (one statement per save) and `loads:` (the two cannot
+   be combined; the compiler says so). Use it for a rare, heavy, sequential command, not as the
+   default.
+
+**Two things to watch with this kind of command:**
+
+* **The sums are not version-checked.** The customers are (a concurrent change to one fails the
+  command or retries it), but the orders you summed are plain rows: an order placed while the
+  command runs is counted or not depending on timing. If the result must be exact at one moment,
+  read the totals from a consistent source (a snapshot, a closed period such as "orders before
+  midnight") instead of "orders so far".
+* **Size.** A command is one transaction, and a transaction that touches every customer holds a
+  lot of locks for a long time. Split the work into pages (one command per page of ids, started
+  by a scheduler) so each page is a short, all-or-nothing unit of its own.
+
+#### Best practices
+
+* **One command, one aggregate-sized decision.** A command should change what must be consistent
+  together, no more. Things that may become consistent a moment later belong in a second command
+  triggered by an event ("eventual consistency between aggregates").
+* **Declare what you load.** `loads:` fetches every id the command was given in one query
+  before `execute/1`, so there is nothing to query between changes.
+* **Put queries in the first half of `execute/1`.** A good shape is: read everything, decide,
+  change, save. If you find yourself wanting to read again after saving, that read is a second
+  command.
+* **Chain for ids, event for queries.** Commands that need each other's *ids* can be chained in
+  one transaction; commands that need each other's *query results* are connected by an event.
+* **Do not work around the guard.** Reading with raw Ecto after a save sees stale data and no
+  error. If it feels necessary, the command is doing two jobs: split it.
+* **Make second steps idempotent.** Whatever is started by an event can run more than once;
+  give it a natural key or check whether the work is already done.
+* **Test the whole path against the database repository.** A unit test with the in-memory
+  repository does not yet raise for a save followed by a query.
+
+#### Why it works this way
+
+The restriction is the price of a goal, and it was chosen on purpose.
+
+**The goal.** A command that changes twenty aggregates used to cost about 82 queries (a read, a
+version read, an update and an events insert for each, plus begin and commit). The unit of work
+loads what it needs up front and writes everything that changed in a handful of statements: 5
+queries instead of 82 in the same scenario, and far fewer contended retries, because a
+transaction holds its row locks for a shorter time. That is only possible if `save` does **not**
+write: it records the change, and the write happens once, when the command succeeds.
+
+**The consequence.** While changes are unwritten, the database does not have them. Anything that
+asks the database a question other than "give me row X" can answer without them. By id the
+framework can still answer correctly, because it holds the aggregate in memory (the identity map).
+A query by another field (`find_by_email`, `list`, `count`) cannot be answered from memory: that
+would mean re-implementing the database's query engine over the aggregates held in memory.
+
+**What else was considered, and why it was not chosen:**
+
+| Option | What it does | Why not |
+|---|---|---|
+| Write on every `save` (the old behaviour) | Queries always see the latest state | No batching: 82 queries instead of 5; locks held longer |
+| Automatic flush before a query (what Hibernate does) | Writes pending changes just before a non-id query, then runs it | The writes are no longer one batch. Worse, **where** the writes happen now depends on what the code reads, so adding a query in one place changes the statements, the lock order and the failure point somewhere else. Hard to see, hard to test |
+| A public `flush()` | The command decides when to write | Every command must remember to call it, and a wrong flush point is a silent performance or consistency bug. It also invites one big command with several flushes, which is the thing a unit of work is meant to prevent |
+| Answer the query from memory too | Queries see unwritten changes | Needs a query engine over aggregates in memory; any difference from the database's answer is a quiet bug |
+| **Raise on a query after a save (chosen)** | The command fails, loudly, the first time it runs | The command has to be arranged as read, decide, write, or split in two |
+
+Raising was preferred to every quiet alternative for two reasons. A wrong answer from a query
+(a count that misses the item you just added) is far worse than an error, because nothing tells
+you. And an error that happens on the first run, in a test, is cheap to fix, whereas a flush that
+changes behaviour under load is not.
+
+**It also pushes commands towards a good shape.** A command that must save and then ask the
+database something about the result is doing two things: the second depends on the first being
+committed. Making that visible, and asking for it to be written as two commands connected by an
+event, matches how the rest of the framework works (small commands, events between aggregates).
+The cost is real, though: a chain that an in-memory implementation would run happily has to be
+rearranged, as the example application's `CompleteItem` and `RecordProgress` were.
+
+**What is not decided.** If this proves too strict, an opt-in automatic flush per command
+(`flush_before_queries: true`) can be added without changing anything for commands that do not use
+it. It would give up the single batch for that command only. It has not been built.
+
+The example application shows both sides: `OnboardUser` is a chain that works because every
+step reads by id, and `CompleteItem` followed by `RecordProgress` in one command is the chain that
+raises, connected instead through the `ItemCompleted` event (see its README, "Chaining commands").
+
+### With `transaction: false`
+
+A command without a transaction still has a unit of work, so its saves are written only if it
+succeeds: a command that fails after its first `save` writes nothing. (Before, that first save
+stayed.) The flush itself is atomic: it opens a short transaction of its own, so a conflict
+writes none of it. Use `unit_of_work: false` as well for the old behaviour, where every `save`
+is written, and kept, at once.
+
+## Databases
+
+The dialect is picked from the repo's Ecto adapter (`config :vicander, :dialect, MyDialect` picks
+another). Postgres and MySQL 8 are supported:
+
+| | Postgres | MySQL 8 (`myxql`) |
+|---|---|---|
+| Aggregates, commands, outbox, poller, dead letters | yes | yes |
+| Unit of work, `loads:`, batched writes | yes | yes |
+| One `UPDATE` for many aggregates | `UPDATE ... FROM (VALUES ...)` | locking read, then `UPDATE ... JOIN (SELECT ... UNION ALL ...)` |
+| Claiming events | `FOR UPDATE SKIP LOCKED` | `FOR UPDATE SKIP LOCKED` |
+| Queries are read-only in the database | yes | when the connection is not in a transaction already |
+| Array columns (`{:array, type}`) | yes | no: use `:map` or a list of value objects (JSON) |
+| Partial indexes of the outbox | yes | no: `mix vic.gen.outbox_migration` leaves them out |
+
+A MySQL batched `UPDATE` first locks the rows it will write, in key order, and reads their
+versions; MySQL reports changed rows, not matched ones, so that read is how it knows exactly which
+aggregates lost a race. The result is the same as on Postgres: one `:stale_aggregate` listing
+every conflict.
+
+The framework's own tests run on both: `mix test` on Postgres, and
+
+```
+docker run -d -e MYSQL_ROOT_PASSWORD=mysql -p 3306:3306 mysql:8.0
+DB=mysql mix test --only mysql
+```
+
+on MySQL (`MYSQL_HOST`, `MYSQL_PORT` and `MYSQL_PASSWORD` point it elsewhere). To support another
+database, implement `DDD.Dialect`: the four basic callbacks, and the optional batched ones
+(`insert_new/4`, `update_versioned/5`, `delete_versioned/4`) and `retryable?/1`. Without the
+batched ones it still works, one aggregate at a time.
+
 ## Outbox
 
 Events are written to the `domain_events` table in the same transaction as the aggregate (and
@@ -636,8 +1044,10 @@ all. `DDD.Outbox.Poller` then delivers them to their handlers:
 
 1. **Claim** a batch of due events with a lease and `FOR UPDATE SKIP LOCKED`, so several
    pollers or nodes never take the same event.
-2. **Deliver** to every subscribed handler, synchronously.
-3. **Mark published only when every handler succeeded or rejected.** A system failure is
+2. **Deliver** to every subscribed handler, synchronously. The events of one aggregate are
+   delivered one after another, in order; different aggregates run side by side.
+3. **Mark published only when every handler succeeded or rejected**, for the whole batch in one
+   statement. A system failure is
    retried after an exponential backoff (1s, 2s, 4s ... capped at 5 minutes). After
    `max_retries` retries (default 10, so 11 attempts) the event is dead-lettered: `failed_at`
    is set, `last_error` says why, and it is no longer claimed.
@@ -645,6 +1055,29 @@ all. `DDD.Outbox.Poller` then delivers them to their handlers:
 The attempt is counted when the event is claimed, so even an attempt that kills the whole VM
 uses one up. If the server stops mid-delivery, the lease expires and the event is delivered
 again; handlers that had already succeeded are skipped.
+
+A poll claims 20 events (`batch_size`). When a batch comes back full the poller polls again at
+once, and it sleeps `interval_ms` (3 seconds) only when nothing is left, so a backlog drains as
+fast as the handlers allow and the interval is just the delay before an event on an idle system
+is noticed.
+
+### Sizing the pool
+
+The poller, your handlers and your web requests all draw on the same Ecto pool. Up to
+`concurrency` aggregates (default 4) are delivered at once, and each holds a connection while its
+handlers run, plus one for the poller's own claim. Keep `concurrency` below the repo's
+`:pool_size`, and leave room for requests; the poller logs a warning at start-up when
+`concurrency` is not below the pool size. A handler that calls a slow external API holds its
+connection for the whole call, so give it `transaction: false` or call the API outside the
+database work.
+
+```elixir
+{DDD.Supervisor, handlers: [...], poller: [batch_size: 20, concurrency: 4, interval_ms: 3_000]}
+```
+
+Commands that lose an optimistic-lock race and use `retry_on_conflict` wait a random 1 to 5 ms
+before the first retry, doubling the cap on each further one up to 200 ms, so a hot aggregate
+sheds load instead of every loser retrying at the same moment.
 
 ### Handlers
 
@@ -897,14 +1330,16 @@ Known gaps, in the order they matter. None is hidden: each was found and decided
   with a raw constraint error instead of a `DDD.Error`. Ids are UUIDv7, so this only happens when
   the same new struct is saved twice at once.
 * **Projection ordering.** A projection applies events in delivery order, which follows
-  `occurred_at` within a poll batch. Its `on` clauses should be commutative (increments, upserts
+  `occurred_at` for one aggregate but not across aggregates (they are delivered concurrently).
+  Its `on` clauses should be commutative (increments, upserts
   of independent fields) rather than depend on strict order; events carry no aggregate version
   yet that a projection could use to detect an out-of-order one.
-* **Outbox lease per batch.** A claimed batch of up to 100 events shares one 30-second lease.
+* **Outbox lease per batch.** A claimed batch of up to 20 events shares one 30-second lease.
   With slow handlers the unprocessed tail can be claimed again by another node. Renew the lease
   per event, or claim fewer events.
-* **Logged parameters.** `DDD.Command` and `DDD.Query` log every parameter value at info level.
-  There is no way to keep a password or token out of the log yet.
+* **Logged parameters.** `DDD.Command` and `DDD.Query` log every parameter value at debug level
+  (when a command or query starts). There is no way to keep a password or token out of that log
+  yet, so don't enable debug logging in production.
 
 
 ## Example application

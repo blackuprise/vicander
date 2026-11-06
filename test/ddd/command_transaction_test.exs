@@ -73,7 +73,22 @@ defmodule DDD.CommandTransactionTest do
     def execute(%__MODULE__{owner_id: owner_id, second_name: name}), do: Steps.run(owner_id, name)
   end
 
+  # No transaction and no unit of work: every save is written at once and stays.
   defmodule NotAtomic do
+    @moduledoc false
+    use DDD.Command, transaction: false, unit_of_work: false
+
+    command do
+      field :owner_id, :string, required: true
+      field :second_name, :string, required: true
+    end
+
+    @impl DDD.Command
+    def execute(%__MODULE__{owner_id: owner_id, second_name: name}), do: Steps.run(owner_id, name)
+  end
+
+  # No transaction, but a unit of work: the saves are written only if the command succeeds.
+  defmodule DeferredNoTransaction do
     @moduledoc false
     use DDD.Command, transaction: false
 
@@ -160,6 +175,19 @@ defmodule DDD.CommandTransactionTest do
     assert {:error, %Error{}} = NotAtomic.call(%{owner_id: owner_id, second_name: " "})
 
     assert count("test_carts") == 1
+    assert count("domain_events") == 1
+  end
+
+  test "with transaction: false but a unit of work, a failing command writes nothing",
+       %{owner_id: owner_id} do
+    assert {:error, %Error{}} =
+             DeferredNoTransaction.call(%{owner_id: owner_id, second_name: " "})
+
+    assert count("test_carts") == 0
+    assert count("domain_events") == 0
+
+    assert {:ok, _} = DeferredNoTransaction.call(%{owner_id: owner_id, second_name: "Second"})
+    assert count("test_carts") == 2
     assert count("domain_events") == 1
   end
 

@@ -614,6 +614,21 @@ defmodule DDD.Schema do
 
   # `new` sets both timestamps, any other change bumps `updated_at`, and a plain
   # `validate/1` changes nothing. Structs without the fields (value objects) are untouched.
+  #
+  # An aggregate is different: its `updated_at` says when it was last *stored*, so an operation
+  # leaves it alone and the repository sets it when it writes the aggregate (`touch/1`). An
+  # operation that changes nothing stored then leaves the aggregate as it was.
+  defp stamp(%{created_at: _, updated_at: _, __pending_events__: _} = struct, operation) do
+    case operation do
+      :new ->
+        now = DateTime.utc_now()
+        %{struct | created_at: struct.created_at || now, updated_at: struct.updated_at || now}
+
+      _ ->
+        struct
+    end
+  end
+
   defp stamp(%{created_at: _, updated_at: _} = struct, operation) do
     now = DateTime.utc_now()
 
@@ -805,6 +820,12 @@ defmodule DDD.Schema do
   def link_event(event, _module, _id), do: event
 
   # ── Sealing ───────────────────────────────────────────────────────────────
+
+  @doc false
+  # Set `updated_at` to now, for an aggregate that is about to be stored. Not sealed: the
+  # caller seals once it has finished changing the struct.
+  def touch(%{updated_at: _} = aggregate), do: %{aggregate | updated_at: DateTime.utc_now()}
+  def touch(aggregate), do: aggregate
 
   @doc "Seal a struct (stamp it with a fingerprint of its data)."
   def seal(%{__struct__: _} = struct), do: %{struct | __sealed__: fingerprint(struct)}

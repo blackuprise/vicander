@@ -277,7 +277,23 @@ defmodule DDD.OptimisticLockingTest do
 
       assert {:ok, %{text: "x"}} = RenameWithRetry.call(%{id: saved.id, text: "x"})
       assert Agent.get(counter, & &1) == 2
-      assert_receive {^ref, %{attempt: 1}, %{command: RenameWithRetry}}
+      assert_receive {^ref, %{attempt: 1, delay_ms: delay_ms}, %{command: RenameWithRetry}}
+      # A random wait before the retry, so the losers of a race don't collide again.
+      assert delay_ms in 1..5
+    end
+
+    test "waits longer, up to a cap, the more often it has lost" do
+      delays =
+        for attempt <- [1, 3, 6, 50],
+            _ <- 1..200,
+            do: {attempt, DDD.Command.retry_delay_ms(attempt)}
+
+      for {attempt, cap} <- [{1, 5}, {3, 20}, {6, 160}, {50, 200}] do
+        waits = for {^attempt, ms} <- delays, do: ms
+        assert Enum.all?(waits, &(&1 in 1..cap))
+        # Jitter: not every wait is the cap.
+        assert Enum.uniq(waits) |> length() > 1
+      end
     end
 
     test "gives up after the configured retries", %{

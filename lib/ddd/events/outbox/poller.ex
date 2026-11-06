@@ -10,9 +10,11 @@ defmodule DDD.Outbox.Poller do
        `FOR UPDATE SKIP LOCKED`, so several pollers or nodes never take the same event.
     2. **Deliver.** Handlers run synchronously, each in its own transaction by default,
        together with a record in `event_deliveries`. A handler that already succeeded for this
-       event is skipped.
-    3. **Mark.** The event is marked published when *every* handler succeeded or rejected it
-       (a business error is a recorded rejection, never retried). A system failure
+       event is skipped. The events of one aggregate are delivered one after another, in the
+       order they happened; different aggregates are delivered concurrently (`:concurrency`).
+    3. **Mark.** The events of the batch that every handler succeeded or rejected (a business
+       error is a recorded rejection, never retried) are marked published, in one statement. A
+       system failure
        (infrastructure error, exception) is retried after a backoff, and after `:max_retries`
        retries the event is dead-lettered (`failed_at` is set, it is no longer claimed, and a
        `[:ddd, :outbox, :dead_letter]` telemetry event is emitted).
@@ -21,12 +23,16 @@ defmodule DDD.Outbox.Poller do
   one up. If the server stops mid-delivery, the lease expires and another poll picks the event
   up again; handlers that had already succeeded are not re-run.
 
+  A poll that claims a full batch polls again at once instead of waiting `:interval_ms`, so the
+  interval is only how long an idle poller sleeps. A backlog drains as fast as the handlers
+  allow, whatever the interval and batch size.
+
   ## Supervision tree setup
 
       children = [
         MyApp.Repo,
         DDD.EventBus,
-        {DDD.Outbox.Poller, repo: MyApp.Repo, interval_ms: 500, batch_size: 100}
+        {DDD.Outbox.Poller, repo: MyApp.Repo, interval_ms: 3_000, batch_size: 20}
       ]
 
   Subscribe the handlers *before* the poller starts (an event with no subscribed handler is
@@ -35,8 +41,12 @@ defmodule DDD.Outbox.Poller do
   ## Options
 
     * `:repo`         — (required) your Ecto.Repo
-    * `:interval_ms`  — poll interval in ms (default: 500)
-    * `:batch_size`   — events claimed per poll (default: 100)
+    * `:interval_ms`  — how long an idle poller sleeps between polls, in ms (default: 3_000)
+    * `:batch_size`   — events claimed per poll (default: 20). A small batch keeps the lease
+      short and a slow handler from holding up many events.
+    * `:concurrency`  — aggregates delivered at the same time within a batch (default: 4).
+      Each one holds a database connection while its handlers run, so keep it below the
+      repo's `:pool_size` (a warning is logged at start-up when it is not).
     * `:event_bus`    — module with `handlers_for/1` (default: `DDD.EventBus`)
     * `:lease_ms`     — how long a claimed event is reserved (default: 30_000)
     * `:max_retries`  — retries after the first attempt before dead-lettering (default: 10,
@@ -56,8 +66,9 @@ defmodule DDD.Outbox.Poller do
 
   alias DDD.Outbox.Event
 
-  @default_interval 500
-  @default_batch 100
+  @default_interval 3_000
+  @default_batch 20
+  @default_concurrency 4
   @default_lease_ms 30_000
   @default_max_retries 10
 
@@ -77,6 +88,7 @@ defmodule DDD.Outbox.Poller do
       repo: Keyword.fetch!(opts, :repo),
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval),
       batch_size: Keyword.get(opts, :batch_size, @default_batch),
+      concurrency: max(Keyword.get(opts, :concurrency, @default_concurrency), 1),
       event_bus: Keyword.get(opts, :event_bus, DDD.EventBus),
       lease_ms: Keyword.get(opts, :lease_ms, @default_lease_ms),
       max_retries:
@@ -88,14 +100,32 @@ defmodule DDD.Outbox.Poller do
     # the process in the middle of a database query.
     Process.flag(:trap_exit, true)
 
+    warn_if_pool_too_small(state)
     schedule_poll(state.interval_ms)
     {:ok, state}
   end
 
+  # Every concurrently delivered aggregate holds a connection, and so does the poller's own
+  # claim; with fewer connections than that the deliveries wait for each other.
+  defp warn_if_pool_too_small(state) do
+    pool_size = Keyword.get(state.repo.config(), :pool_size, 10)
+
+    if state.concurrency >= pool_size do
+      Logger.warning(
+        "[outbox] poller concurrency (#{state.concurrency}) is not below the pool size " <>
+          "(#{pool_size}) of #{inspect(state.repo)}: deliveries will queue for a connection"
+      )
+    end
+  end
+
   @impl GenServer
   def handle_info(:poll, state) do
-    do_poll(state)
-    schedule_poll(state.interval_ms)
+    # A full batch means more is probably waiting: go again now (through the mailbox, so a
+    # `poll_now` or a shutdown is not starved), and sleep only when the backlog is gone.
+    if do_poll(state) >= state.batch_size,
+      do: send(self(), :poll),
+      else: schedule_poll(state.interval_ms)
+
     {:noreply, state}
   end
 
@@ -109,9 +139,58 @@ defmodule DDD.Outbox.Poller do
   defp do_poll(state) do
     rows = claim(state.repo, state.batch_size, state.lease_ms)
     :telemetry.execute([:ddd, :outbox, :poll], %{claimed: length(rows)}, %{})
-    Enum.each(rows, &process(&1, state))
-    length(rows)
+    delivered = deliver_batch(rows, state)
+
+    try do
+      mark_published(delivered, state.repo)
+      length(rows)
+    rescue
+      exception ->
+        # The handlers have run and have their delivery records, so nothing re-runs: when the
+        # lease ends the events are claimed again and marked published without another delivery.
+        # Until then the poller must live on, and wait its interval rather than poll in a loop.
+        Logger.error(
+          "[outbox] could not mark #{length(delivered)} delivered event(s) published: " <>
+            Exception.message(exception)
+        )
+
+        :telemetry.execute([:ddd, :outbox, :mark_failed], %{count: length(delivered)}, %{})
+        0
+    end
   end
+
+  # Returns the rows that were delivered. Events of one aggregate stay in order (the claim
+  # returns them oldest first); different aggregates have no order to keep, so they run side by
+  # side. A failed event does not hold back the rest of its aggregate: it is retried later.
+  defp deliver_batch(rows, state) do
+    groups = rows |> Enum.group_by(&{&1.aggregate_type, &1.aggregate_id}) |> Map.values()
+
+    if state.concurrency <= 1 or match?([_], groups) do
+      Enum.flat_map(groups, &deliver_group(&1, state))
+    else
+      groups
+      |> Task.async_stream(&deliver_group(&1, state),
+        max_concurrency: state.concurrency,
+        timeout: :infinity,
+        ordered: false,
+        zip_input_on_exit: true
+      )
+      |> Enum.flat_map(fn
+        {:ok, delivered} ->
+          delivered
+
+        # Never expected (`process/2` catches everything), but if a delivery process dies its
+        # events keep their lease and are claimed again when it ends.
+        {:exit, {group, reason}} ->
+          Logger.error("[outbox] delivery of #{length(group)} event(s) died: #{inspect(reason)}")
+
+          []
+      end)
+    end
+  end
+
+  defp deliver_group(group, state),
+    do: Enum.filter(group, &(process(&1, state) == :published))
 
   # ── Claiming ──────────────────────────────────────────────────────────────
 
@@ -124,7 +203,6 @@ defmodule DDD.Outbox.Poller do
     Event.claim(
       repo,
       lease_ms,
-      [asc: :occurred_at],
       Event.delivery_fields(),
       [attempts: 1],
       fn now ->
@@ -148,9 +226,9 @@ defmodule DDD.Outbox.Poller do
   defp process(row, state) do
     with {:ok, event} <- build_event(row),
          :ok <- deliver_all(event, row, state) do
-      mark_published(state.repo, row)
+      :published
     else
-      {:error, reason} -> fail(row, reason, state)
+      {:error, reason} -> failed(row, reason, state)
     end
   rescue
     exception ->
@@ -158,10 +236,15 @@ defmodule DDD.Outbox.Poller do
         "[outbox] delivering #{row.event_type} crashed: #{Exception.message(exception)}"
       )
 
-      fail(row, DDD.Error.wrap(exception, %{}), state)
+      failed(row, DDD.Error.wrap(exception, %{}), state)
   catch
     kind, value ->
-      fail(row, DDD.Error.infrastructure(code: :thrown, message: inspect({kind, value})), state)
+      failed(row, DDD.Error.infrastructure(code: :thrown, message: inspect({kind, value})), state)
+  end
+
+  defp failed(row, reason, state) do
+    fail(row, reason, state)
+    :failed
   end
 
   defp deliver_all(event, row, state) do
@@ -179,9 +262,15 @@ defmodule DDD.Outbox.Poller do
     end
   end
 
-  defp mark_published(repo, row) do
+  # One statement for the whole batch. If the node dies before it runs, the lease expires and
+  # the events are claimed again; their handlers already have delivery records, so none re-runs.
+  defp mark_published([] = _delivered, _repo), do: :ok
+
+  defp mark_published(rows, repo) do
+    ids = Enum.map(rows, & &1.id)
+
     Event
-    |> where([e], e.id == ^row.id)
+    |> where([e], e.id in ^ids)
     |> repo.update_all(
       set: [
         published_at: DDD.Dialect.usec(DateTime.utc_now()),
@@ -190,18 +279,21 @@ defmodule DDD.Outbox.Poller do
       ]
     )
 
-    :telemetry.execute(
-      [:ddd, :outbox, :published],
-      %{
-        count: 1,
-        delay_ms: DateTime.diff(DateTime.utc_now(), row.occurred_at, :millisecond)
-      },
-      %{event_type: row.event_type}
-    )
+    now = DateTime.utc_now()
 
-    Logger.info(
-      "[outbox] published #{row.event_type} (#{row.aggregate_type} #{row.aggregate_id})"
-    )
+    for row <- rows do
+      :telemetry.execute(
+        [:ddd, :outbox, :published],
+        %{count: 1, delay_ms: DateTime.diff(now, row.occurred_at, :millisecond)},
+        %{event_type: row.event_type}
+      )
+
+      Logger.debug(
+        "[outbox] published #{row.event_type} (#{row.aggregate_type} #{row.aggregate_id})"
+      )
+    end
+
+    :ok
   end
 
   # `row.attempts` already counts this attempt (it is incremented when the event is claimed,

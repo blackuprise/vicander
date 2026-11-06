@@ -12,7 +12,8 @@ defmodule DDD.Params do
       end
 
   A field is `field name, type, opts`. The type is any `DDD.Type`. Options: `required: true`,
-  `default: value` and `description: "..."`. `new/1` reports every missing required field and
+  `default: value`, `description: "..."` and, on a command, `loads: Repository` (see
+  `DDD.Command`). `new/1` reports every missing required field and
   every value of the wrong type at once, as a `DDD.Error` with a violation per field.
 
   The declaration is also readable by tools: `__description__/0` and `__params__/0`

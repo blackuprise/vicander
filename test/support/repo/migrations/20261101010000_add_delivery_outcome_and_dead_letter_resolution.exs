@@ -17,11 +17,13 @@ defmodule DDD.TestRepo.Migrations.AddDeliveryOutcomeAndDeadLetterResolution do
       add(:replays, :integer, null: false, default: 0)
     end
 
-    create(
-      index(:domain_events, [:failed_at],
-        where: "failed_at IS NOT NULL AND resolved_at IS NULL",
-        name: :domain_events_unresolved_dead_letters_index
+    if repo().__adapter__() == Ecto.Adapters.Postgres do
+      create(
+        index(:domain_events, [:failed_at],
+          where: "failed_at IS NOT NULL AND resolved_at IS NULL",
+          name: :domain_events_unresolved_dead_letters_index
+        )
       )
-    )
+    end
   end
 end

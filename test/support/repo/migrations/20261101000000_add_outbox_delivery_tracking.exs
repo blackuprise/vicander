@@ -13,12 +13,15 @@ defmodule DDD.TestRepo.Migrations.AddOutboxDeliveryTracking do
       add(:failed_at, :utc_datetime_usec)
     end
 
-    create(
-      index(:domain_events, [:occurred_at],
-        where: "published_at IS NULL AND failed_at IS NULL",
-        name: :domain_events_pending_index
+    # A partial index: MySQL has none, and does without.
+    if repo().__adapter__() == Ecto.Adapters.Postgres do
+      create(
+        index(:domain_events, [:occurred_at],
+          where: "published_at IS NULL AND failed_at IS NULL",
+          name: :domain_events_pending_index
+        )
       )
-    )
+    end
 
     # Which handler already processed which event, so a retry skips the handlers that
     # succeeded and only re-runs the ones that failed.

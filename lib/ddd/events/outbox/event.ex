@@ -34,38 +34,47 @@ defmodule DDD.Outbox.Event do
     do: [:id, :event_type, :aggregate_id, :aggregate_type, :payload, :occurred_at, :attempts]
 
   @doc false
-  # Reserve rows for `lease_ms`: lock the ids `due.(now)` selects (with the dialect's lock
-  # clause, so another node skips them), mark them leased, and return `fields` of each, in
-  # `order`. `inc` is added to counters in the same update. One code path for every database:
-  # no `UPDATE … RETURNING`, which not every database has.
-  def claim(repo, lease_ms, order, fields, inc, due) do
+  # Reserve rows for `lease_ms`: select `fields` of the rows `due.(now)` finds (the query
+  # orders and limits them; its own select is replaced), locking them with the dialect's lock
+  # clause so another node skips them, then mark them leased. `inc` is added to counters in the
+  # same update, and to the rows returned, so they show what was stored. Two statements and no
+  # `UPDATE … RETURNING`, which not every database has.
+  def claim(repo, lease_ms, fields, inc, due) do
     dialect = DDD.Dialect.for_repo(repo)
+    fields = Enum.uniq([:id | fields])
 
     {:ok, rows} =
       repo.transaction(fn ->
         now = dialect.now(repo)
-        query = due.(now)
-        query = dialect.lock_for_claim(query)
+
+        query =
+          now
+          |> due.()
+          |> Ecto.Query.exclude(:select)
+          |> Ecto.Query.select([e], map(e, ^fields))
+          |> dialect.lock_for_claim()
 
         case repo.all(query) do
           [] ->
             []
 
-          ids ->
+          rows ->
+            ids = Enum.map(rows, & &1.id)
             leased_until = DateTime.add(now, lease_ms, :millisecond)
 
             Ecto.Query.from(e in __MODULE__, where: e.id in ^ids)
             |> repo.update_all(set: [locked_until: leased_until], inc: inc)
 
-            Ecto.Query.from(e in __MODULE__,
-              where: e.id in ^ids,
-              order_by: ^order,
-              select: map(e, ^fields)
-            )
-            |> repo.all()
+            Enum.map(rows, &increment(&1, inc))
         end
       end)
 
     rows
+  end
+
+  defp increment(row, inc) do
+    Enum.reduce(inc, row, fn {field, by}, acc ->
+      if Map.has_key?(acc, field), do: Map.update!(acc, field, &((&1 || 0) + by)), else: acc
+    end)
   end
 end
