@@ -20,7 +20,7 @@ defmodule DDD.MCP.Server do
       `{Module, name: "tool_name"}`. The default name is the last module segment in snake case.
     * `repos:` become read-only resources, one per repository. List the repository port (it says which aggregate
       and which `find_by` lookups exist), or `{Aggregate, repository: Port}`. The port must
-      define `impl/0`.
+      define `impl/0`, which you write (see "Naming the adapter: impl/0" in the README).
     * `read_only: true` refuses every command tool.
     * `authorize:` is a function `(name, arguments) -> :ok | {:error, reason}` called before
       each tool call (with the tool's name) and resource read (with `"resource:<name>"` and

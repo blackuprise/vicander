@@ -1299,8 +1299,8 @@ defmodule DDD.UnitOfWorkTest do
 
     test "a declared id that does not exist fails the command before it does anything" do
       [a, b] = saved_notes(2)
-      missing_one = UUID.uuid4()
-      missing_two = UUID.uuid4()
+      missing_one = Ecto.UUID.generate()
+      missing_two = Ecto.UUID.generate()
       Process.put(:probe, self())
 
       assert {:error, %DDD.Error{} = error} =
@@ -1347,7 +1347,7 @@ defmodule DDD.UnitOfWorkTest do
 
     test "the first field with a missing id is the one reported" do
       [a] = saved_notes(1)
-      missing = UUID.uuid4()
+      missing = Ecto.UUID.generate()
 
       assert {:error, %DDD.Error{details: %{field: :second_id, missing_ids: [^missing]}}} =
                RenameTwo.call(%{first_id: a.id, second_id: missing})
@@ -1392,7 +1392,7 @@ defmodule DDD.UnitOfWorkTest do
       assert count_of(queries, ~s(FROM "uow_notes")) == 1
 
       assert {:error, %DDD.Error{code: :not_found, entity: Note}} =
-               ViaPort.call(%{ids: [UUID.uuid4()]})
+               ViaPort.call(%{ids: [Ecto.UUID.generate()]})
     end
 
     test "can name the aggregate, whose repository is configured once" do
@@ -1428,7 +1428,7 @@ defmodule DDD.UnitOfWorkTest do
       end
 
       assert {:error, %DDD.Error{code: :not_found, entity: Note, details: details}} =
-               ByAggregate.call(%{ids: [a], other_id: missing = UUID.uuid4()})
+               ByAggregate.call(%{ids: [a], other_id: missing = Ecto.UUID.generate()})
 
       assert details == %{field: :other_id, missing_ids: [missing]}
     end
@@ -1449,13 +1449,13 @@ defmodule DDD.UnitOfWorkTest do
       end
 
       assert_raise ArgumentError, ~r/config :vicander, :repositories/, fn ->
-        Unconfigured.call(%{id: UUID.uuid4()})
+        Unconfigured.call(%{id: Ecto.UUID.generate()})
       end
 
       Application.put_env(:vicander, :repositories, [{Note, Enum}])
 
       assert_raise ArgumentError, ~r/the repository configured for .*Note.*Enum.*is not/, fn ->
-        Unconfigured.call(%{id: UUID.uuid4()})
+        Unconfigured.call(%{id: Ecto.UUID.generate()})
       end
     end
 
@@ -1486,7 +1486,7 @@ defmodule DDD.UnitOfWorkTest do
       assert found.id == saved.id
 
       assert {:error, %DDD.Error{code: :not_found, entity: Note}} =
-               MemRename.call(%{id: UUID.uuid4()})
+               MemRename.call(%{id: Ecto.UUID.generate()})
     end
 
     test "cannot be combined with unit_of_work: false" do
@@ -1624,6 +1624,43 @@ defmodule DDD.UnitOfWorkTest do
       end)
 
       assert {:ok, %{text: "renamed", version: 2}} = MemNotes.find_by_id(mem.id)
+    end
+
+    test "all and count raise once something is saved, as the Ecto adapter's queries do", %{
+      mem: mem
+    } do
+      for {name, query} <- [all: &MemNotes.all/0, count: &MemNotes.count/0] do
+        assert_raise PendingChangesError, ~r/MemNotes\.#{name} reads the database/, fn ->
+          UnitOfWork.run(fn ->
+            {:ok, note} = MemNotes.find_by_id(mem.id)
+            {:ok, note} = Note.rename(note, "pending")
+            {:ok, _} = MemNotes.save(note)
+            query.()
+          end)
+        end
+      end
+
+      # Nothing was written by the failed units.
+      assert {:ok, %{text: "mem", version: 1}} = MemNotes.find_by_id(mem.id)
+    end
+
+    test "all and count are fine before the first save, and outside a unit of work", %{mem: mem} do
+      assert MemNotes.count() == 1
+      assert [%{id: id}] = MemNotes.all()
+      assert id == mem.id
+
+      assert {:ok, :done} =
+               UnitOfWork.run(fn ->
+                 assert MemNotes.count() == 1
+                 {:ok, note} = MemNotes.find_by_id(mem.id)
+                 {:ok, note} = Note.rename(note, "later")
+                 {:ok, _} = MemNotes.save(note)
+                 # A by-id read is always fine.
+                 assert {:ok, _} = MemNotes.find_by_id(mem.id)
+                 {:ok, :done}
+               end)
+
+      assert MemNotes.count() == 1
     end
 
     test "an update sets updated_at and keeps created_at", %{mem: mem} do

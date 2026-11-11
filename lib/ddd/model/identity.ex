@@ -24,13 +24,9 @@ defmodule DDD.Identity do
   ## Generating ids
 
   `new/1` fills in a UUIDv7 only for a single `identity(:id, :uuid)` that the caller left out.
-  For any other identity the caller passes every part. `generate/0` and the functions below
-  make ids by hand:
-
-    * `uuid7/0` (the default, `generate/0`) - time-ordered: ids created later sort later, which
-      keeps btree indexes compact
-    * `uuid4/0` - random
-    * `uuid1/0`, `uuid3/2`, `uuid5/2` - time and name based (see `UUID`)
+  For any other identity the caller passes every part. `generate/0` and `uuid7/0` make an id by
+  hand: time-ordered, so ids created later sort later, which keeps btree indexes compact. Need a
+  random v4 or a name-based id? `Ecto.UUID.generate/0` is already a dependency.
   """
 
   @composite_types [:string, :uuid, :integer, :atom, :date]
@@ -62,22 +58,6 @@ defmodule DDD.Identity do
 
     format(<<millis::48, 7::4, rand_a::12, 2::2, rand_b::62>>)
   end
-
-  @doc "A random UUIDv4."
-  @spec uuid4() :: String.t()
-  defdelegate uuid4, to: UUID
-
-  @doc "A UUIDv1 (time and node based)."
-  @spec uuid1() :: String.t()
-  defdelegate uuid1, to: UUID
-
-  @doc "A name-based UUIDv3 (MD5). `namespace` is `:dns`, `:url`, `:oid`, `:x500` or a UUID."
-  @spec uuid3(atom() | String.t(), String.t()) :: String.t()
-  defdelegate uuid3(namespace, name), to: UUID
-
-  @doc "A name-based UUIDv5 (SHA-1). `namespace` is `:dns`, `:url`, `:oid`, `:x500` or a UUID."
-  @spec uuid5(atom() | String.t(), String.t()) :: String.t()
-  defdelegate uuid5(namespace, name), to: UUID
 
   defp format(
          <<a::binary-size(4), b::binary-size(2), c::binary-size(2), d::binary-size(2),

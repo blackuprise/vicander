@@ -1,7 +1,7 @@
 defmodule Vicander.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.3.0"
   @source_url "https://github.com/blackuprise/vicander"
 
   def project do
@@ -44,12 +44,11 @@ defmodule Vicander.MixProject do
 
   defp deps do
     [
-      {:decimal, "~> 2.0"},
-      {:elixir_uuid, "~> 1.2"},
-      {:ecto, "~> 3.11"},
+      {:decimal, "~> 3.2"},
+      {:ecto, "~> 3.14"},
       # Needed at run time (the outbox and the repositories call `repo.query!`), so it is a
       # dependency. The database driver is the application's choice: it adds `postgrex`.
-      {:ecto_sql, "~> 3.11"},
+      {:ecto_sql, "~> 3.14"},
       {:postgrex, ">= 0.0.0", only: :test},
       {:myxql, ">= 0.0.0", only: :test},
       {:ex_doc, "~> 0.30", only: :dev, runtime: false},

@@ -63,7 +63,7 @@ defmodule DDD.TestHelpersTest do
   end
 
   setup do
-    {:ok, kase} = Case.new(owner_id: UUID.uuid4(), name: "billing")
+    {:ok, kase} = Case.new(owner_id: Ecto.UUID.generate(), name: "billing")
     {:ok, opened} = Case.open(kase)
     %{opened: opened, fresh: kase}
   end

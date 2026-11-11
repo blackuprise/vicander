@@ -60,7 +60,7 @@ defmodule DDD.TypesTest do
                  note: "long text",
                  status: :paid,
                  tags: ["a", "b"],
-                 customer_id: UUID.uuid4(),
+                 customer_id: Ecto.UUID.generate(),
                  total: total,
                  prices: %{"base" => total},
                  ship_to: home,
@@ -148,7 +148,7 @@ defmodule DDD.TypesTest do
     end
 
     test "a ref has the type of the referenced identity" do
-      assert Type.valid?({:ref, Customer}, UUID.uuid4())
+      assert Type.valid?({:ref, Customer}, Ecto.UUID.generate())
       refute Type.valid?({:ref, Customer}, "x")
       assert Type.identity_type(Customer) == :uuid
     end
@@ -277,7 +277,7 @@ defmodule DDD.TypesTest do
           note: "n",
           status: :paid,
           tags: ["a"],
-          customer_id: UUID.uuid4(),
+          customer_id: Ecto.UUID.generate(),
           total: total,
           prices: %{"base" => total},
           ship_to: home,

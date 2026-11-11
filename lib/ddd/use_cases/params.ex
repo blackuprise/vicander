@@ -12,9 +12,27 @@ defmodule DDD.Params do
       end
 
   A field is `field name, type, opts`. The type is any `DDD.Type`. Options: `required: true`,
-  `default: value`, `description: "..."` and, on a command, `loads: Repository` (see
-  `DDD.Command`). `new/1` reports every missing required field and
+  `default: value`, `description: "..."`, `sensitive: true` and, on a command,
+  `loads: Repository` (see `DDD.Command`). `new/1` reports every missing required field and
   every value of the wrong type at once, as a `DDD.Error` with a violation per field.
+
+  ## Sensitive fields
+
+  A password, a token or a document that must not end up in a log is marked `sensitive: true`.
+  The struct then leaves that field out of `inspect/1`, so the framework's debug logs, a crash
+  report and IEx do not show it. Nothing else changes: the field is in the struct, is validated
+  and reaches `execute/1`.
+
+      command do
+        field :email,    :string, required: true
+        field :password, :string, required: true, sensitive: true
+      end
+
+      inspect(%Register{email: "a@b.c", password: "hunter2"})
+      #=> "#Register<email: \"a@b.c\", ...>"
+
+  This covers `inspect/1` only. A field you put in a log message yourself, in telemetry metadata
+  or in an error you build is yours to keep out.
 
   The declaration is also readable by tools: `__description__/0` and `__params__/0`
   (`[{name, type, opts}]`), which is how the MCP server builds a tool's input schema.
@@ -34,6 +52,11 @@ defmodule DDD.Params do
   defmacro define_struct(block) do
     quote do
       unquote(block)
+
+      # A `sensitive: true` field is left out of `inspect/1`, so it stays out of logs, crash
+      # reports and IEx. It is still in the struct.
+      sensitive = for {name, _type, opts} <- @params_fields, opts[:sensitive], do: name
+      if sensitive != [], do: @derive({Inspect, except: sensitive})
 
       defstruct @params_fields
                 |> Enum.reverse()

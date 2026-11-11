@@ -3,6 +3,64 @@
 All notable changes to `vicander` (the `DDD.*` modules). The project follows
 [Semantic Versioning](https://semver.org); until 1.0, a minor version may change the API.
 
+## 0.3.0 - 2026-11-11
+
+### Breaking
+
+* **Newer dependencies.** `ecto ~> 3.14`, `ecto_sql ~> 3.14` and `decimal ~> 3.2`. The old
+  `decimal ~> 2.0` requirement kept applications on ecto 3.13.6 and decimal 2.4.1, which have
+  published security advisories.
+* **`elixir_uuid` is no longer a dependency** (its last release was in 2019). `DDD.Identity`
+  loses `uuid1/0`, `uuid3/2`, `uuid4/0` and `uuid5/2`, which only delegated to it; `uuid7/0` and
+  `generate/0` are unchanged. Use `Ecto.UUID.generate/0` for a random v4. Event ids are now
+  UUIDv7 (they were v4), so the outbox table's primary key is time-ordered.
+* **A handler gets the event with the types it was declared with.** `field :status, :atom`,
+  `:decimal`, `:date`, `:datetime` and enum fields used to come back from the outbox as the text
+  they were stored as; now they are an atom, a `Decimal`, a `Date`, a `DateTime`. The event macro
+  keeps each field's type, the payload is stored with `DDD.Type.json_dump/2` and read with
+  `json_load/2`. A value that does not load (a row written by hand, or before the field had its
+  type) is delivered as stored, with a warning. Code that matched the old text form must change.
+  An event that changes in a way old rows can not be read as gets a new module (`OrderPlacedV2`).
+* **`DDD.InMemoryRepository.count/0` and `all/0` raise after a save in a unit of work**, as the
+  Ecto adapter's queries do (`DDD.UnitOfWork.PendingChangesError`). A test that saved and then
+  counted passed against the in-memory repository and failed in production; now it fails in both.
+
+### Added
+
+* **`sensitive: true` on command, query and event fields.** The struct leaves the field out of
+  `inspect/1`, so debug logs, crash reports and IEx do not show it. The debug lines of commands
+  and queries now log the struct (`inspect(command)`), not a plain map of its fields. The value is
+  still in the struct and reaches `execute/1`; an event's stored payload still holds it.
+* **The outbox renews the lease of a batch.** A batch can take longer than its lease; before each
+  event the poller now renews the lease of the rest of its aggregate's events once half of it has
+  passed (no query while handlers are fast), so another node does not claim an event whose
+  handler is still running. See "Delivery guarantees" in the README for what each kind of
+  handler can promise, with advice for handlers that publish to Kafka.
+
+### Changed
+
+* **`required: true` is `NOT NULL` in a generated table.** `mix vic.gen.migration` writes
+  `null: false` for the column when it creates a table. A column added to an existing table stays
+  nullable, as adding a `NOT NULL` column to a table with rows fails, and neither the diff nor the
+  drift check reports an existing table as changed. Tables generated earlier need a hand-written
+  migration to add the constraint.
+* **The `@doc` above a `defop` is the operation's documentation and description.** It is shown by
+  IEx and ExDoc and read by the MCP server (`@doc false` hides the operation). It used to be
+  discarded silently. `defop ..., description: "..."` still works when there is no `@doc` but is
+  deprecated and warns at compile time.
+* **Unknown event types are rejected about 100 times faster.** The poller looked a type up by
+  listing every available module (about 20 ms); it now looks for the module's file. A backlog of
+  events of a removed type no longer costs seconds of scanning per poll.
+
+### Fixed
+
+* `mix vic.gen.outbox_migration` compiles the project first, so it works on a fresh checkout
+  without a separate `mix compile`.
+* The README no longer lists "Concurrent first saves" as a gap: two commands that save the same
+  new id at once get one success and one `:stale_aggregate` (now covered by a test).
+* The README explains `impl/0` on a repository port (it is written by hand, on purpose), and the
+  errors that ask for it say so.
+
 ## 0.2.0 - 2026-11-06
 
 ### Changed

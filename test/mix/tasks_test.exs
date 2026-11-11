@@ -103,5 +103,15 @@ defmodule Mix.Tasks.VicTasksTest do
       # Named after the application's configured repo.
       assert source =~ "defmodule DDD.TestRepo.Migrations.CreateDomainEvents"
     end
+
+    test "compiles the project first, so a fresh checkout needs no separate `mix compile`",
+         %{tmp_dir: dir} do
+      # `Mix.Task.run/1` answers :noop for a task that already ran in this session. Make the
+      # compile task runnable again: if the generator compiles, it is spent again afterwards.
+      Mix.Task.reenable("compile")
+      File.cd!(dir, fn -> Gen.OutboxMigration.run([]) end)
+
+      assert Mix.Task.run("compile") == :noop
+    end
   end
 end

@@ -96,7 +96,7 @@ defmodule DDD.Query do
   end
 
   defp run(module, query) do
-    Logger.debug("[query] #{inspect(module)} started #{inspect(Map.from_struct(query))}")
+    Logger.debug("[query] #{inspect(module)} started #{inspect(query)}")
 
     {micros, result} =
       :timer.tc(fn ->

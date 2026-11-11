@@ -38,7 +38,7 @@ defmodule DDD.DeadLetterTest do
 
   # Inserts an event that is already dead-lettered, `age_s` seconds ago.
   defp dead_letter!(attrs \\ []) do
-    id = UUID.uuid4()
+    id = Ecto.UUID.generate()
     failed_at = DateTime.add(DateTime.utc_now(), -Keyword.get(attrs, :age_s, 120), :second)
 
     Repo.insert_all("domain_events", [
@@ -115,7 +115,7 @@ defmodule DDD.DeadLetterTest do
     test "events that are not dead letters are never listed" do
       Repo.insert_all("domain_events", [
         %{
-          id: Ecto.UUID.dump!(UUID.uuid4()),
+          id: Ecto.UUID.dump!(Ecto.UUID.generate()),
           event_type: "Fine",
           aggregate_id: "1",
           aggregate_type: "X",
@@ -142,7 +142,7 @@ defmodule DDD.DeadLetterTest do
     test "get/2 finds a dead letter by id" do
       id = dead_letter!()
       assert %{id: ^id} = DeadLetters.get(Repo, id)
-      assert DeadLetters.get(Repo, UUID.uuid4()) == nil
+      assert DeadLetters.get(Repo, Ecto.UUID.generate()) == nil
     end
 
     test "replay/2 clears the failure state and counts the replay" do
@@ -169,9 +169,9 @@ defmodule DDD.DeadLetterTest do
     end
 
     test "resolving something that is not a dead letter is an error" do
-      assert {:error, :not_found} = DeadLetters.replay(Repo, UUID.uuid4())
-      assert {:error, :not_found} = DeadLetters.keep(Repo, UUID.uuid4())
-      assert {:error, :not_found} = DeadLetters.discard(Repo, UUID.uuid4())
+      assert {:error, :not_found} = DeadLetters.replay(Repo, Ecto.UUID.generate())
+      assert {:error, :not_found} = DeadLetters.keep(Repo, Ecto.UUID.generate())
+      assert {:error, :not_found} = DeadLetters.discard(Repo, Ecto.UUID.generate())
     end
 
     test "replay_all/1 replays every unresolved dead letter" do
@@ -335,7 +335,7 @@ defmodule DDD.DeadLetterTest do
 
   describe "when the poller gives up" do
     setup do
-      id = UUID.uuid4()
+      id = Ecto.UUID.generate()
 
       Repo.insert_all("domain_events", [
         %{

@@ -45,15 +45,20 @@ defmodule DDD.Migration do
     composite? = length(parts) > 1
 
     field_columns =
-      for {name, type, _opts} <- aggregate.__ddd_fields__() do
+      for {name, type, opts} <- aggregate.__ddd_fields__() do
         column = %{
           "name" => Atom.to_string(name),
           "type" => type |> DDD.Type.column_type() |> inspect(),
           "primary_key" => not composite? and name in parts
         }
 
-        # The parts of a composite identity are always present.
-        if composite? and name in parts, do: Map.put(column, "null", false), else: column
+        # The parts of a composite identity are always present, and so is a `required: true`
+        # field: the table says so too (NOT NULL), not only the validation. Adding such a column
+        # to a table that has rows stays nullable (see `alter_add_line/1`), and neither `diff/3`
+        # nor `drift/3` looks at this flag, so an existing table is never reported as changed.
+        if (composite? and name in parts) or Keyword.get(opts, :required, false),
+          do: Map.put(column, "null", false),
+          else: column
       end
 
     # A composite identity is stored whole, as a string: that column is the primary key.

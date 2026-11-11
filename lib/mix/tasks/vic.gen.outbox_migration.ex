@@ -9,6 +9,10 @@ defmodule Mix.Tasks.Vic.Gen.OutboxMigration do
   use Mix.Task
 
   def run(_args) do
+    # The repo comes from the application's config, which needs the project compiled: without
+    # this a fresh checkout fails with "no repo configured" until `mix compile` has been run.
+    Mix.Task.run("compile")
+
     timestamp = Calendar.strftime(DateTime.utc_now(), "%Y%m%d%H%M%S")
     filename = "#{timestamp}_create_domain_events.exs"
     path = Path.join(["priv", "repo", "migrations", filename])

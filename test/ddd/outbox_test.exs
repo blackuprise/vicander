@@ -103,7 +103,7 @@ defmodule DDD.OutboxTest do
   end
 
   defp insert_event(n \\ 1, occurred_at \\ DateTime.utc_now()) do
-    id = UUID.uuid4()
+    id = Ecto.UUID.generate()
 
     Repo.insert_all("domain_events", [
       %{
@@ -340,7 +340,7 @@ defmodule DDD.OutboxTest do
 
     test "a payload key the event no longer has is dropped, the others are delivered" do
       subscribe([Transactional])
-      id = UUID.uuid4()
+      id = Ecto.UUID.generate()
       removed = "no_such_field_#{System.unique_integer([:positive])}"
 
       Repo.insert_all("domain_events", [

@@ -683,7 +683,7 @@ defmodule DDD.Repository.Ecto do
       # The event is linked to its aggregate by emit_event/2; fall back to this one.
       aggregate_id: event.aggregate_id || to_string(id),
       aggregate_type: event.aggregate_type || aggregate |> Module.split() |> Enum.join("."),
-      payload: event |> Map.from_struct() |> stringify_keys(),
+      payload: event |> DDD.DomainEvent.dump_payload() |> stringify_keys(),
       occurred_at: DDD.Dialect.usec(event.occurred_at),
       published_at: nil,
       inserted_at: inserted_at

@@ -106,7 +106,7 @@ defmodule DDD.ProjectionTest do
     )
     """)
 
-    %{list: UUID.uuid4()}
+    %{list: Ecto.UUID.generate()}
   end
 
   # A domain event struct, as the poller would deliver it.
@@ -117,7 +117,7 @@ defmodule DDD.ProjectionTest do
 
   # An event in the outbox, `n` seconds after the start of the (fake) day.
   defp store(module, list, n, payload \\ %{}) do
-    id = UUID.uuid4()
+    id = Ecto.UUID.generate()
 
     Repo.insert_all("domain_events", [
       %{
@@ -318,7 +318,7 @@ defmodule DDD.ProjectionTest do
               {"c", 0, "bob"},
               {"d", 2, "bob"}
             ] do
-          id = UUID.uuid4()
+          id = Ecto.UUID.generate()
           deliver(Created, id, owner_id: owner, title: title)
           for _ <- 1..open//1, do: deliver(Added, id)
           id
@@ -329,7 +329,7 @@ defmodule DDD.ProjectionTest do
 
     test "get/1", %{ids: [first | _]} do
       assert {:ok, %{title: "a", open_count: 3}} = Summary.get(first)
-      assert {:error, :not_found} = Summary.get(UUID.uuid4())
+      assert {:error, :not_found} = Summary.get(Ecto.UUID.generate())
       assert {:error, :not_found} = Summary.get("not-a-uuid")
     end
 
@@ -401,7 +401,7 @@ defmodule DDD.ProjectionTest do
 
   describe "rebuild/0" do
     test "empties the table and replays the stored events in order", %{list: l} do
-      other = UUID.uuid4()
+      other = Ecto.UUID.generate()
       store(Created, l, 1, %{"owner_id" => "ann", "title" => "First"})
       store(Added, l, 2)
       store(Added, l, 3)
@@ -413,7 +413,7 @@ defmodule DDD.ProjectionTest do
       # The table is wrong, and so is a row for a list that has no events.
       Repo.query!(
         "INSERT INTO projection_summaries (list_id, title, open_count) VALUES ($1, 'junk', 99)",
-        [Ecto.UUID.dump!(UUID.uuid4())]
+        [Ecto.UUID.dump!(Ecto.UUID.generate())]
       )
 
       ref = make_ref()
@@ -450,7 +450,7 @@ defmodule DDD.ProjectionTest do
       rows =
         for n <- 1..501 do
           %{
-            id: Ecto.UUID.dump!(UUID.uuid4()),
+            id: Ecto.UUID.dump!(Ecto.UUID.generate()),
             event_type: type_name(Added),
             aggregate_id: l,
             aggregate_type: "My.List",
@@ -579,7 +579,7 @@ defmodule DDD.ProjectionTest do
       end
       """)
 
-      id = UUID.uuid4()
+      id = Ecto.UUID.generate()
       only_key = Module.concat(DDD.ProjectionTest, OnlyKey)
       assert :ok = only_key.handle(event(Added, id))
       assert {:ok, %{id: ^id}} = only_key.get(id)

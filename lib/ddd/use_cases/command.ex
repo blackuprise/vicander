@@ -196,7 +196,7 @@ defmodule DDD.Command do
   end
 
   defp run(module, command) do
-    Logger.debug("[command] #{inspect(module)} started #{inspect(Map.from_struct(command))}")
+    Logger.debug("[command] #{inspect(module)} started #{inspect(command)}")
 
     {micros, result} =
       :timer.tc(fn ->
@@ -342,7 +342,8 @@ defmodule DDD.Command do
     resolve(repository) ||
       raise ArgumentError,
             "the repository configured for #{inspect(aggregate)}, #{inspect(repository)}, is not " <>
-              "an adapter, nor a port whose impl/0 is one"
+              "an adapter, nor a port whose impl/0 is one (a port's impl/0 is written by hand, " <>
+              "see \"Naming the adapter: impl/0\" in the README)"
   end
 
   # An adapter is itself; a port is the adapter its `impl/0` gives; anything else, nil.
@@ -369,7 +370,8 @@ defmodule DDD.Command do
   defp unknown_loads(spec),
     do:
       "`loads: #{inspect(spec)}` is not an aggregate, a repository adapter, nor a port whose " <>
-        "impl/0 is one"
+        "impl/0 is one (a port's impl/0 is written by hand, see \"Naming the adapter: impl/0\" " <>
+        "in the README)"
 
   defp not_found(field, repository, ids) do
     aggregate = repository.__aggregate__()

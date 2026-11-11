@@ -44,7 +44,7 @@ defmodule DDD.HealthTest do
   defp insert_event(opts) do
     Repo.insert_all("domain_events", [
       %{
-        id: Ecto.UUID.dump!(UUID.uuid4()),
+        id: Ecto.UUID.dump!(Ecto.UUID.generate()),
         event_type: "My.Events.Thing",
         aggregate_id: "agg-1",
         aggregate_type: "My.Aggregate",

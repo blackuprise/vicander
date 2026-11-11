@@ -103,7 +103,9 @@ defmodule DDD.MCP.Registry do
 
     unless function_exported?(port, :impl, 0) do
       raise ArgumentError,
-            "#{inspect(port)} must define impl/0 (the adapter in use) to be exposed over MCP"
+            "#{inspect(port)} must define impl/0 (the adapter in use) to be exposed over MCP. " <>
+              "It is not generated: add `def impl, do: MyApp.YourAdapter` to the port " <>
+              "(see \"Naming the adapter: impl/0\" in the README)"
     end
 
     %{

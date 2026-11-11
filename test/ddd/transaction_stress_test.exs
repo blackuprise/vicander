@@ -492,7 +492,7 @@ defmodule DDD.TransactionStressTest do
       rows =
         for n <- chunk do
           %{
-            id: Ecto.UUID.dump!(UUID.uuid4()),
+            id: Ecto.UUID.dump!(Ecto.UUID.generate()),
             event_type: "DDD.TransactionStressTest.Bumped",
             aggregate_id: "agg-#{n}",
             aggregate_type: "Stress.Counter",

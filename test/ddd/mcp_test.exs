@@ -596,7 +596,7 @@ defmodule DDD.MCPTest do
 
     test "what is not there is 'not found'" do
       for uri <- [
-            "note://#{UUID.uuid4()}",
+            "note://#{Ecto.UUID.generate()}",
             "other://x",
             "no-scheme",
             "note://by/colour/red",
@@ -900,7 +900,7 @@ defmodule DDD.MCPTest do
       assert Args.from_string({:enum, [:a]}, "b") == :error
       assert Args.from_string(:string, "x") == {:ok, "x"}
       assert Args.from_string({:ref, Note}, "x") == :error
-      assert {:ok, _} = Args.from_string({:ref, Note}, UUID.uuid4())
+      assert {:ok, _} = Args.from_string({:ref, Note}, Ecto.UUID.generate())
     end
 
     test "atoms are never created from input" do
@@ -923,7 +923,7 @@ defmodule DDD.MCPTest do
         def execute(_), do: {:ok, 1}
       end
 
-      id = UUID.uuid4()
+      id = Ecto.UUID.generate()
 
       assert {:ok, attrs} =
                Args.cast(Composite, %{

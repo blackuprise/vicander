@@ -104,8 +104,18 @@ defmodule DDD.InMemoryRepository do
         :ok
       end
 
-      def all, do: Agent.get(__MODULE__, &Map.values(&1))
-      def count, do: Agent.get(__MODULE__, &map_size(&1))
+      # Not by id, so, like the Ecto adapter's queries, they raise once the command has saved or
+      # deleted something: what they read does not have that change yet in a database either.
+      def all do
+        DDD.UnitOfWork.guard_query!(__MODULE__, :all)
+        Agent.get(__MODULE__, &Map.values(&1))
+      end
+
+      def count do
+        DDD.UnitOfWork.guard_query!(__MODULE__, :count)
+        Agent.get(__MODULE__, &map_size(&1))
+      end
+
       def clear, do: Agent.update(__MODULE__, fn _ -> %{} end)
     end
   end

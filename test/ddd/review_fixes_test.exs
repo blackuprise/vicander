@@ -93,7 +93,7 @@ defmodule DDD.ReviewFixesTest do
     end
 
     test "a real one still works" do
-      owner = UUID.uuid4()
+      owner = Ecto.UUID.generate()
       {:ok, memo} = Memo.new(owner_id: owner)
       {:ok, _} = PgMemoRepository.save(memo)
       assert [%{id: id}] = PgMemoRepository.find_by_owner_id(owner)
@@ -134,7 +134,7 @@ defmodule DDD.ReviewFixesTest do
     end
 
     test "validate/1 still validates a modified struct (and seals it when it is valid)" do
-      {:ok, memo} = Memo.new(owner_id: UUID.uuid4())
+      {:ok, memo} = Memo.new(owner_id: Ecto.UUID.generate())
       assert {:ok, _} = Memo.validate(%{memo | notes: "fine"})
       assert {:error, _} = Memo.validate(%{memo | owner_id: "nope"})
     end

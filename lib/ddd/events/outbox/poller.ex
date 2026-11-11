@@ -23,6 +23,32 @@ defmodule DDD.Outbox.Poller do
   one up. If the server stops mid-delivery, the lease expires and another poll picks the event
   up again; handlers that had already succeeded are not re-run.
 
+  ## The lease and delivery guarantees
+
+  Every node that starts a poller claims events on its own: `FOR UPDATE SKIP LOCKED` keeps two
+  nodes from taking the same event, and the lease keeps them away from an event that is being
+  delivered. A batch can outlast its lease (slow handlers, many events), so before each event
+  the poller renews the lease of the rest of its aggregate's events once half of it is gone. With
+  fast handlers that costs no query. What you can rely on depends on the handler (see
+  `DDD.EventHandler`):
+
+    * **A transactional handler (the default) is exactly-once on your database.** The delivery
+      record and the handler's writes commit together, and a second node that delivers the same
+      event waits for the first and then skips it. This holds whatever the lease. It is also the
+      right choice for a handler whose only action is an external call such as publishing to
+      Kafka: the call happens inside the transaction, so a second node can not make it twice.
+      What remains is the gap between the external system and your database: if the node dies
+      after Kafka accepted the message but before the commit, the retry sends it again. Give the
+      message a key a consumer can deduplicate on (the event's `event_id`). It also holds a
+      connection and a transaction while the call runs, so keep the call's timeout well under
+      `:lease_ms` and the database's lock and checkout timeouts.
+    * **A `transaction: false` handler is at-least-once and must be idempotent.** Two nodes can
+      both run it for the same event if one handler outlasts the lease (a single handler that
+      takes longer than `:lease_ms` is not protected by the renewal), and a crash between the
+      effect and the delivery record runs it again.
+
+  The lease is renewed in the database's own time, so nodes with different clocks agree.
+
   A poll that claims a full batch polls again at once instead of waiting `:interval_ms`, so the
   interval is only how long an idle poller sleeps. A backlog drains as fast as the handlers
   allow, whatever the interval and batch size.
@@ -48,7 +74,9 @@ defmodule DDD.Outbox.Poller do
       Each one holds a database connection while its handlers run, so keep it below the
       repo's `:pool_size` (a warning is logged at start-up when it is not).
     * `:event_bus`    — module with `handlers_for/1` (default: `DDD.EventBus`)
-    * `:lease_ms`     — how long a claimed event is reserved (default: 30_000)
+    * `:lease_ms`     — how long a claimed event is reserved (default: 30_000). It is renewed
+      for the rest of an aggregate's events once half of it has passed, so it has to be longer
+      than your slowest single handler, not than a whole batch.
     * `:max_retries`  — retries after the first attempt before dead-lettering (default: 10,
       so 11 attempts)
     * `:backoff_ms`   — `fn retry -> ms end`, the wait before retry number `retry`
@@ -138,8 +166,9 @@ defmodule DDD.Outbox.Poller do
 
   defp do_poll(state) do
     rows = claim(state.repo, state.batch_size, state.lease_ms)
+    claimed_at = System.monotonic_time(:millisecond)
     :telemetry.execute([:ddd, :outbox, :poll], %{claimed: length(rows)}, %{})
-    delivered = deliver_batch(rows, state)
+    delivered = deliver_batch(rows, state, claimed_at)
 
     try do
       mark_published(delivered, state.repo)
@@ -162,14 +191,14 @@ defmodule DDD.Outbox.Poller do
   # Returns the rows that were delivered. Events of one aggregate stay in order (the claim
   # returns them oldest first); different aggregates have no order to keep, so they run side by
   # side. A failed event does not hold back the rest of its aggregate: it is retried later.
-  defp deliver_batch(rows, state) do
+  defp deliver_batch(rows, state, claimed_at) do
     groups = rows |> Enum.group_by(&{&1.aggregate_type, &1.aggregate_id}) |> Map.values()
 
     if state.concurrency <= 1 or match?([_], groups) do
-      Enum.flat_map(groups, &deliver_group(&1, state))
+      Enum.flat_map(groups, &deliver_group(&1, state, claimed_at))
     else
       groups
-      |> Task.async_stream(&deliver_group(&1, state),
+      |> Task.async_stream(&deliver_group(&1, state, claimed_at),
         max_concurrency: state.concurrency,
         timeout: :infinity,
         ordered: false,
@@ -189,8 +218,36 @@ defmodule DDD.Outbox.Poller do
     end
   end
 
-  defp deliver_group(group, state),
-    do: Enum.filter(group, &(process(&1, state) == :published))
+  # The lease was set when the batch was claimed (`refreshed_at`, in monotonic ms). A group can
+  # reach an event long after that, behind slower groups or slower handlers, and by then the
+  # lease may have run out and another node may have claimed the event. So before each event
+  # the lease of the group's remaining events is renewed, but only once half of it is gone:
+  # with fast handlers this costs no query at all.
+  defp deliver_group(group, state, refreshed_at, delivered \\ [])
+  defp deliver_group([], _state, _refreshed_at, delivered), do: Enum.reverse(delivered)
+
+  defp deliver_group([row | rest] = remaining, state, refreshed_at, delivered) do
+    refreshed_at = renew_lease(remaining, state, refreshed_at)
+    delivered = if process(row, state) == :published, do: [row | delivered], else: delivered
+    deliver_group(rest, state, refreshed_at, delivered)
+  end
+
+  defp renew_lease(rows, state, refreshed_at) do
+    now = System.monotonic_time(:millisecond)
+
+    if now - refreshed_at >= div(state.lease_ms, 2) do
+      Event.extend_lease(state.repo, Enum.map(rows, & &1.id), state.lease_ms)
+      now
+    else
+      refreshed_at
+    end
+  rescue
+    # A database that is down now will fail the delivery itself; do not fail it here as well.
+    # The next event tries again.
+    exception ->
+      Logger.warning("[outbox] could not renew a lease: " <> Exception.message(exception))
+      refreshed_at
+  end
 
   # ── Claiming ──────────────────────────────────────────────────────────────
 
@@ -374,6 +431,10 @@ defmodule DDD.Outbox.Poller do
   # test load lazily) has no atom, so `String.to_existing_atom/1` alone would wrongly reject
   # it. We only create the atom when a module with that name exists on disk, so unknown
   # names from the database never grow the atom table.
+  #
+  # An unknown name is looked up by file name (`:code.where_is_file/1`, about 0.04 ms) and not
+  # by listing every available module (`:code.all_available/0`, about 20 ms): a backlog of events
+  # of a type that no longer exists would otherwise spend that on every attempt of every event.
   defp resolve_module(event_type) do
     full_name = "Elixir." <> event_type
 
@@ -389,10 +450,13 @@ defmodule DDD.Outbox.Poller do
       else: {:error, {:unknown_event_module, event_type}}
   end
 
+  # Only a module name is looked up: the text comes from the database and becomes part of a
+  # file name, so anything with a path separator or other odd character is not a module.
   defp available_module(full_name) do
-    if List.keymember?(:code.all_available(), String.to_charlist(full_name), 0),
-      do: String.to_atom(full_name),
-      else: nil
+    if full_name =~ ~r/\AElixir(\.[A-Za-z_][A-Za-z0-9_]*)+\z/ and
+         :code.where_is_file(String.to_charlist(full_name <> ".beam")) != :non_existing,
+       do: String.to_atom(full_name),
+       else: nil
   end
 
   @doc false
@@ -400,7 +464,7 @@ defmodule DDD.Outbox.Poller do
   # `aggregate_type`, `payload`, `occurred_at`). Also used to replay events into a projection.
   def build_event(row) do
     with {:ok, event_module} <- resolve_module(row.event_type) do
-      payload = atomize_keys(row.payload)
+      payload = event_module |> DDD.DomainEvent.load_payload(atomize_keys(row.payload))
       occurred_at = parse_datetime(row.occurred_at)
 
       event =

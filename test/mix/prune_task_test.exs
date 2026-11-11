@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Vic.Outbox.PruneTest do
 
     Repo.insert_all("domain_events", [
       %{
-        id: Ecto.UUID.dump!(UUID.uuid4()),
+        id: Ecto.UUID.dump!(Ecto.UUID.generate()),
         event_type: "My.Events.Thing",
         aggregate_id: "a",
         aggregate_type: "A",

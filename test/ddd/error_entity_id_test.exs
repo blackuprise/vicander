@@ -69,7 +69,7 @@ defmodule DDD.ErrorEntityIdTest do
       assert {:error, error} = Ticket.new(%{})
       assert {:ok, _} = Ecto.UUID.cast(error.entity_id)
 
-      id = UUID.uuid4()
+      id = Ecto.UUID.generate()
       assert {:error, error} = Ticket.new(id: id)
       assert error.entity_id == id
     end
@@ -82,7 +82,10 @@ defmodule DDD.ErrorEntityIdTest do
 
     test "an operation that changes the identity" do
       ticket = ticket!()
-      assert {:error, %Error{code: :identity_changed} = error} = Ticket.move(ticket, UUID.uuid4())
+
+      assert {:error, %Error{code: :identity_changed} = error} =
+               Ticket.move(ticket, Ecto.UUID.generate())
+
       assert error.entity_id == ticket.id
     end
 

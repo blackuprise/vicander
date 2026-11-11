@@ -72,6 +72,17 @@ defmodule DDD.Outbox.Event do
     rows
   end
 
+  @doc false
+  # Push the lease of the events `ids` out to `lease_ms` from now, by the database clock like
+  # `claim/5`. The poller calls it for the events of a batch that have not been delivered yet
+  # when a slow handler has used up half the lease, so that another node does not claim them.
+  def extend_lease(repo, ids, lease_ms) do
+    leased_until = DateTime.add(DDD.Dialect.for_repo(repo).now(repo), lease_ms, :millisecond)
+
+    Ecto.Query.from(e in __MODULE__, where: e.id in ^ids and is_nil(e.published_at))
+    |> repo.update_all(set: [locked_until: leased_until])
+  end
+
   defp increment(row, inc) do
     Enum.reduce(inc, row, fn {field, by}, acc ->
       if Map.has_key?(acc, field), do: Map.update!(acc, field, &((&1 || 0) + by)), else: acc

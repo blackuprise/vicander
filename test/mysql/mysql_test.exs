@@ -439,7 +439,7 @@ defmodule DDD.MySQLTest do
       assert count_of(queries, "UPDATE `mysql_things`") == 1
 
       assert {:error, %DDD.Error{code: :not_found, details: %{missing_ids: [missing]}}} =
-               RenameMany.call(%{ids: ids ++ [missing_id = UUID.uuid4()]})
+               RenameMany.call(%{ids: ids ++ [missing_id = Ecto.UUID.generate()]})
 
       assert missing == missing_id
     end
@@ -475,8 +475,8 @@ defmodule DDD.MySQLTest do
     test "is reported as :deadlock_detected and the command runs again" do
       # Two real connections and real commits: the sandbox would give both the same one.
       Ecto.Adapters.SQL.Sandbox.mode(Repo, :auto)
-      a = UUID.uuid4()
-      b = UUID.uuid4()
+      a = Ecto.UUID.generate()
+      b = Ecto.UUID.generate()
 
       on_exit(fn ->
         Repo.query!("DELETE FROM test_users")

@@ -4,7 +4,7 @@ defmodule DDD.RetentionTest do
   alias DDD.Outbox.{Pruner, Retention}
 
   defp insert_event(attrs) do
-    id = UUID.uuid4()
+    id = Ecto.UUID.generate()
     days_old = Keyword.get(attrs, :days_old, 40)
     at = NaiveDateTime.utc_now() |> NaiveDateTime.add(-days_old * 86_400, :second)
 

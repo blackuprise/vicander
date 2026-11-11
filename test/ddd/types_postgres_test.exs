@@ -80,7 +80,7 @@ defmodule DDD.TypesPostgresTest do
   test "every field type survives a save and a read" do
     {:ok, total} = DDD.Money.of("19.99", "EUR")
     {:ok, home} = Address.new(street: "Main 1")
-    customer_id = UUID.uuid4()
+    customer_id = Ecto.UUID.generate()
 
     {:ok, order} =
       Order.new(
@@ -158,7 +158,7 @@ defmodule DDD.TypesPostgresTest do
           tags: ["x", "y"],
           scores: [Decimal.new("1.5")],
           kinds: [:b, :a],
-          customer_id: UUID.uuid4(),
+          customer_id: Ecto.UUID.generate(),
           total: total,
           prices: %{"base" => total},
           ship_to: home,

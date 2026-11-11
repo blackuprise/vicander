@@ -15,6 +15,16 @@ defmodule DDD.MigrationTest do
     end
   end
 
+  defmodule Note do
+    use DDD.Aggregate
+
+    aggregate do
+      identity :id, :uuid
+      field :headline, :string, required: true
+      field :summary, :string
+    end
+  end
+
   @col_id %{"name" => "id", "type" => ":binary_id", "primary_key" => true}
   @col_text %{"name" => "text", "type" => ":string", "primary_key" => false}
   @col_body %{"name" => "body", "type" => ":string", "primary_key" => false}
@@ -179,8 +189,66 @@ defmodule DDD.MigrationTest do
     end
   end
 
-  defp write_snapshot(dir, table, columns) do
-    path = Path.join([dir, "snapshots", "ddd.migration_test.doc.json"])
+  describe "required: true" do
+    test "is NOT NULL in a new table, and an optional field is not" do
+      assert %{"null" => false} = Enum.find(Migration.columns(Note), &(&1["name"] == "headline"))
+      refute Map.has_key?(Enum.find(Migration.columns(Note), &(&1["name"] == "summary")), "null")
+    end
+
+    test "a create migration says null: false for it", %{tmp_dir: dir} do
+      assert {:ok, path} = Migration.generate(Note, opts(dir))
+
+      content = File.read!(path)
+      assert content =~ "add :headline, :string, null: false"
+      assert content =~ ~r/add :summary, :string\n/
+      assert Code.string_to_quoted!(content)
+    end
+
+    test "a column added to an existing table stays nullable", %{tmp_dir: dir} do
+      # The table has rows: a NOT NULL column with no default would fail to be added.
+      write_snapshot(dir, "notes", [@col_id], "ddd.migration_test.note.json")
+
+      assert {:ok, path} = Migration.generate(Note, opts(dir))
+
+      content = File.read!(path)
+      assert content =~ "alter table(:notes) do"
+      assert content =~ ~r/add :headline, :string\n/
+      refute content =~ "add :headline, :string, null: false"
+    end
+
+    test "a table generated before this flag existed is not reported as changed", %{tmp_dir: dir} do
+      old = [
+        @col_id,
+        %{"name" => "headline", "type" => ":string", "primary_key" => false},
+        %{"name" => "summary", "type" => ":string", "primary_key" => false}
+      ]
+
+      current =
+        Enum.filter(Migration.columns(Note), &(&1["name"] in ~w(created_at updated_at version)))
+
+      write_snapshot(dir, "notes", old ++ current, "ddd.migration_test.note.json")
+
+      assert {:ok, :unchanged} = Migration.generate(Note, opts(dir))
+    end
+
+    test "a diff does not treat the flag as a change" do
+      assert Migration.diff(
+               [%{"name" => "headline", "type" => ":string", "primary_key" => false}],
+               [
+                 %{
+                   "name" => "headline",
+                   "type" => ":string",
+                   "primary_key" => false,
+                   "null" => false
+                 }
+               ]
+             )
+             |> Migration.empty?()
+    end
+  end
+
+  defp write_snapshot(dir, table, columns, name \\ "ddd.migration_test.doc.json") do
+    path = Path.join([dir, "snapshots", name])
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, Jason.encode!(%{"table" => table, "columns" => columns}))
   end

@@ -151,7 +151,7 @@ defmodule DDD.CommandTransactionTest do
   defp count(table), do: Repo.query!("SELECT count(*) FROM #{table}").rows |> hd() |> hd()
 
   setup do
-    %{owner_id: UUID.uuid4()}
+    %{owner_id: Ecto.UUID.generate()}
   end
 
   test "success commits everything the command did", %{owner_id: owner_id} do

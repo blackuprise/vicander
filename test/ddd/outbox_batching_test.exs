@@ -104,7 +104,7 @@ defmodule DDD.OutboxBatchingTest do
     rows =
       for n <- ns do
         %{
-          id: Ecto.UUID.dump!(UUID.uuid4()),
+          id: Ecto.UUID.dump!(Ecto.UUID.generate()),
           event_type: "DDD.OutboxBatchingTest.Ping",
           aggregate_id: aggregate,
           aggregate_type: "Batching.Aggregate",

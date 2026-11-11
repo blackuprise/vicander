@@ -12,7 +12,7 @@ defmodule Mix.Tasks.VicOutboxTasksTest do
   end
 
   defp dead_letter!(error \\ "handler down") do
-    id = UUID.uuid4()
+    id = Ecto.UUID.generate()
     now = DateTime.utc_now()
 
     Repo.insert_all("domain_events", [
@@ -91,7 +91,7 @@ defmodule Mix.Tasks.VicOutboxTasksTest do
 
     test "complains about an unknown id and about missing arguments" do
       assert_raise Mix.Error, ~r/is not a dead letter/, fn ->
-        Outbox.Replay.run([UUID.uuid4()])
+        Outbox.Replay.run([Ecto.UUID.generate()])
       end
 
       assert_raise Mix.Error, ~r/usage/, fn -> Outbox.Replay.run([]) end
@@ -109,7 +109,7 @@ defmodule Mix.Tasks.VicOutboxTasksTest do
 
     test "complains about an unknown id and about missing arguments" do
       assert_raise Mix.Error, ~r/is not a dead letter/, fn ->
-        Outbox.Discard.run([UUID.uuid4()])
+        Outbox.Discard.run([Ecto.UUID.generate()])
       end
 
       assert_raise Mix.Error, ~r/usage/, fn -> Outbox.Discard.run([]) end

@@ -39,6 +39,7 @@ defmodule DDD.Schema do
       @behaviour unquote(behaviour)
       Module.register_attribute(__MODULE__, :ddd_ops, accumulate: true)
       Module.register_attribute(__MODULE__, :ddd_op_docs, accumulate: true)
+      Module.register_attribute(__MODULE__, :ddd_op_hidden, accumulate: true)
       Module.register_attribute(__MODULE__, :ddd_op_args, accumulate: true)
       @ddd_description nil
       @ddd_kind unquote(kind)
@@ -171,6 +172,17 @@ defmodule DDD.Schema do
 
   A broken precondition returns a business error (`code: :precondition_failed`) whose
   violations carry each rule's own code and message. The body never runs.
+
+  ## Documenting an operation
+
+  Write a `@doc` above `defop`. It is the documentation of the generated public function and the
+  operation's description for the MCP server (`__ddd_op_signatures__/0`):
+
+      @doc "Mark the item as done"
+      defop complete(item), do: %{item | status: :done}
+
+  `@doc false` hides the operation. The older `description: "..."` option still works when there
+  is no `@doc`, but is deprecated and warns at compile time.
   """
   defmacro defop(call, do: body), do: define_op(call, [], body, __CALLER__)
   defmacro defop(call, opts, do: body), do: define_op(call, opts, body, __CALLER__)
@@ -193,14 +205,63 @@ defmodule DDD.Schema do
       @ddd_op_args {unquote(name), unquote(length(args)), unquote(arg_names(args)),
                     unquote(caller.line)}
 
-      if unquote(description) do
-        @ddd_op_docs {unquote(name), unquote(length(args)), unquote(description)}
-      end
+      DDD.Schema.__op_doc__(
+        __MODULE__,
+        unquote(name),
+        unquote(length(args)),
+        unquote(description),
+        unquote(caller.file),
+        unquote(caller.line)
+      )
 
       defp unquote(impl)(unquote_splicing(args)) when unquote(guard) do
         unquote(body)
       end
     end
+  end
+
+  @doc false
+  # The description of an operation is its `@doc`. The `@doc` written above `defop` would attach
+  # to the private function that holds the body, where Elixir throws it away, so it is taken here
+  # (and cleared) and given to the public function in `__before_compile__/1` instead. The same
+  # text is the operation's description for `__ddd_ops__/0` and the MCP server.
+  #
+  # `@doc false` hides the operation. `description:` still works when there is no `@doc`, but is
+  # deprecated: a second place to say the same thing.
+  def __op_doc__(module, name, arity, description, file, line) do
+    pending = Module.get_attribute(module, :doc)
+    Module.delete_attribute(module, :doc)
+
+    text =
+      case {pending, description} do
+        {{_line, doc}, nil} ->
+          doc
+
+        {{_line, doc}, _description} ->
+          warn_description(module, name, arity, file, line, "is ignored: the `@doc` is used")
+          doc
+
+        {nil, nil} ->
+          nil
+
+        {nil, description} ->
+          warn_description(module, name, arity, file, line, "is deprecated: use `@doc`")
+          description
+      end
+
+    cond do
+      is_binary(text) -> Module.put_attribute(module, :ddd_op_docs, {name, arity, text})
+      text == false -> Module.put_attribute(module, :ddd_op_hidden, {name, arity})
+      true -> :ok
+    end
+  end
+
+  defp warn_description(module, name, arity, file, line, what) do
+    IO.warn(
+      "`description:` on defop #{name}/#{arity} #{what}. Put the text in a `@doc` above `defop`; " <>
+        "it is then also the function's documentation",
+      [{module, name, arity, [file: String.to_charlist(file), line: line]}]
+    )
   end
 
   @doc false
@@ -285,6 +346,8 @@ defmodule DDD.Schema do
         }
       end
 
+    hidden = module |> Module.get_attribute(:ddd_op_hidden) |> MapSet.new()
+
     op_wrappers =
       for {name, arity} <- ops do
         args = Macro.generate_arguments(arity, module)
@@ -293,7 +356,17 @@ defmodule DDD.Schema do
         requires =
           for {^name, ^arity, specs} <- clauses, spec <- specs, uniq: true, do: spec
 
+        # The operation's `@doc` (see `__op_doc__/6`), or `false` for `@doc false`, or none.
+        doc =
+          cond do
+            Map.has_key?(descriptions, {name, arity}) -> [Map.fetch!(descriptions, {name, arity})]
+            MapSet.member?(hidden, {name, arity}) -> [false]
+            true -> []
+          end
+
         quote do
+          unquote_splicing(for text <- doc, do: quote(do: @doc(unquote(text))))
+
           def unquote(name)(unquote_splicing(args)) do
             DDD.Schema.run_op(
               __MODULE__,

@@ -175,7 +175,10 @@ defmodule DDD.IdentityTest do
   describe "the identity never changes" do
     test "update/2 ignores identity parts" do
       line = line!()
-      assert {:ok, updated} = Line.update(line, sku: "B-2", tenant_id: UUID.uuid4(), qty: 4)
+
+      assert {:ok, updated} =
+               Line.update(line, sku: "B-2", tenant_id: Ecto.UUID.generate(), qty: 4)
+
       assert updated.sku == "A-1"
       assert updated.tenant_id == @tenant
       assert updated.qty == 4
@@ -311,16 +314,8 @@ defmodule DDD.IdentityTest do
       assert millis in before..System.system_time(:millisecond)
     end
 
-    test "the other variants delegate to the UUID library" do
-      assert String.at(Identity.uuid4(), 14) == "4"
-      assert String.at(Identity.uuid1(), 14) == "1"
-      assert String.at(Identity.uuid3(:dns, "a.com"), 14) == "3"
-      assert String.at(Identity.uuid5(:dns, "a.com"), 14) == "5"
-      assert Identity.uuid5(:dns, "a.com") == Identity.uuid5(:dns, "a.com")
-    end
-
     test "every generated id passes the :uuid type" do
-      for id <- [Identity.generate(), Identity.uuid4(), Identity.uuid1()] do
+      for id <- [Identity.generate(), Identity.uuid7()] do
         assert DDD.Type.valid?(:uuid, id)
       end
     end

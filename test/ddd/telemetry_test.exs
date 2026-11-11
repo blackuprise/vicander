@@ -99,7 +99,7 @@ defmodule DDD.TelemetryTest do
   end
 
   defp insert_event(opts \\ []) do
-    id = UUID.uuid4()
+    id = Ecto.UUID.generate()
     occurred_at = Keyword.get(opts, :occurred_at, DateTime.utc_now())
 
     Repo.insert_all("domain_events", [
