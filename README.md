@@ -14,7 +14,7 @@ Field rules and specification invariants run on `new`, `update` and every busine
 # mix.exs
 def deps do
   [
-    {:vicander, "~> 0.3"},
+    {:vicander, "~> 0.4"},
     # the database driver is yours to choose; PostgreSQL and MySQL 8 are supported
     {:postgrex, ">= 0.0.0"}
   ]
@@ -544,6 +544,10 @@ MyApp.Commands.AddItem.call(%{list_id: id, title: "Buy milk"})   # builds, valid
 * `new/1` builds and validates the command (`required: true` fields).
 * `call/1` takes a struct or plain attrs. Every error comes back as a `DDD.Error` with
   `context: %{command: MyApp.Commands.AddItem}`. `call!/1` raises instead.
+* `sensitive: true` on a field (`field :password, :string, required: true, sensitive: true`)
+  keeps it out of `inspect/1`, so debug logs, crash reports and IEx do not show it. Commands,
+  queries and events support it. The value is still in the struct and reaches `execute/1`, and an
+  event's stored payload still holds it.
 
 **Transactions.** `execute/1` runs in its own database transaction by default. `{:ok, _}`
 commits; `{:error, _}` rolls back everything the handler did, including every aggregate it
@@ -1434,12 +1438,6 @@ Known gaps, in the order they matter. None is hidden: each was found and decided
   Its `on` clauses should be commutative (increments, upserts
   of independent fields) rather than depend on strict order; events carry no aggregate version
   yet that a projection could use to detect an out-of-order one.
-* **Outbox lease per batch.** A claimed batch of up to 20 events shares one 30-second lease.
-  With slow handlers the unprocessed tail can be claimed again by another node. Renew the lease
-  per event, or claim fewer events.
-* **Logged parameters.** `DDD.Command` and `DDD.Query` log every parameter value at debug level
-  (when a command or query starts). There is no way to keep a password or token out of that log
-  yet, so don't enable debug logging in production.
 
 
 ## Example application
