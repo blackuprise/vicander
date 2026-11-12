@@ -1,7 +1,7 @@
 defmodule Vicander.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
   @source_url "https://github.com/blackuprise/vicander"
 
   def project do
@@ -56,6 +56,8 @@ defmodule Vicander.MixProject do
       {:credo, "~> 1.7", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:jason, "~> 1.4"},
+      # Only `DDD.MCP.HTTP` uses it; an application that serves MCP over HTTP has Plug already.
+      {:plug, "~> 1.14", optional: true},
       {:telemetry, "~> 1.0"}
     ]
   end

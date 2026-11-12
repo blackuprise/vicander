@@ -43,26 +43,43 @@ defmodule DDD.MCP do
   @not_found -32_002
   @denied -32_001
 
-  @doc "Handle one decoded JSON-RPC message: `{:reply, response}` or `:noreply` (notifications)."
-  @spec handle(Registry.t(), term()) :: {:reply, map()} | :noreply
-  def handle(%Registry{} = registry, %{"jsonrpc" => "2.0", "method" => method} = message)
+  @doc """
+  Handle one decoded JSON-RPC message: `{:reply, response}` or `:noreply` (notifications).
+
+  `context` says who is asking. A transport that authenticates its callers (`DDD.MCP.HTTP`)
+  passes what it learned there, and the server's `authorize:` function receives it as a third
+  argument; with stdio, where one process is one client, it is `%{}`.
+  """
+  @spec handle(Registry.t(), term(), map()) :: {:reply, map()} | :noreply
+  def handle(registry, message, context \\ %{})
+
+  def handle(
+        %Registry{} = registry,
+        %{"jsonrpc" => "2.0", "method" => method} = message,
+        context
+      )
       when is_binary(method) do
     case Map.fetch(message, "id") do
       :error -> :noreply
-      {:ok, id} -> {:reply, respond(registry, id, method, message["params"] || %{})}
+      {:ok, id} -> {:reply, respond(registry, id, method, message["params"] || %{}, context)}
     end
   end
 
-  def handle(_registry, %{"id" => id}),
+  def handle(_registry, %{"id" => id}, _context),
     do: {:reply, error(id, @invalid_request, "Invalid Request")}
 
-  def handle(_registry, _other), do: {:reply, error(nil, @invalid_request, "Invalid Request")}
+  def handle(_registry, _other, _context),
+    do: {:reply, error(nil, @invalid_request, "Invalid Request")}
+
+  @doc "The protocol versions this server speaks, newest first."
+  @spec protocol_versions() :: [String.t()]
+  def protocol_versions, do: @versions
 
   @doc "A parse-error response, for a transport that received text that is not JSON."
   def parse_error, do: error(nil, -32_700, "Parse error")
 
-  defp respond(registry, id, method, params) do
-    case dispatch(registry, method, params) do
+  defp respond(registry, id, method, params, context) do
+    case dispatch(registry, method, params, context) do
       {:ok, result} -> %{"jsonrpc" => "2.0", "id" => id, "result" => result}
       {:error, code, message} -> error(id, code, message)
     end
@@ -80,18 +97,24 @@ defmodule DDD.MCP do
 
   # ── Methods ───────────────────────────────────────────────────────────────
 
-  defp dispatch(registry, "initialize", params), do: {:ok, initialize(registry, params)}
-  defp dispatch(_registry, "ping", _params), do: {:ok, %{}}
-  defp dispatch(registry, "tools/list", _params), do: {:ok, %{"tools" => list_tools(registry)}}
-  defp dispatch(registry, "tools/call", params), do: call_tool(registry, params)
-  defp dispatch(_registry, "resources/list", _params), do: {:ok, %{"resources" => []}}
+  defp dispatch(registry, "initialize", params, _context),
+    do: {:ok, initialize(registry, params)}
 
-  defp dispatch(registry, "resources/templates/list", _params),
+  defp dispatch(_registry, "ping", _params, _context), do: {:ok, %{}}
+
+  defp dispatch(registry, "tools/list", _params, _context),
+    do: {:ok, %{"tools" => list_tools(registry)}}
+
+  defp dispatch(registry, "tools/call", params, context), do: call_tool(registry, params, context)
+  defp dispatch(_registry, "resources/list", _params, _context), do: {:ok, %{"resources" => []}}
+
+  defp dispatch(registry, "resources/templates/list", _params, _context),
     do: {:ok, %{"resourceTemplates" => list_templates(registry)}}
 
-  defp dispatch(registry, "resources/read", params), do: read_resource(registry, params)
+  defp dispatch(registry, "resources/read", params, context),
+    do: read_resource(registry, params, context)
 
-  defp dispatch(_registry, method, _params),
+  defp dispatch(_registry, method, _params, _context),
     do: {:error, @method_not_found, "Method not found: #{method}"}
 
   defp initialize(registry, params) do
@@ -138,16 +161,16 @@ defmodule DDD.MCP do
     end)
   end
 
-  defp call_tool(registry, %{"name" => name} = params) when is_binary(name) do
+  defp call_tool(registry, %{"name" => name} = params, context) when is_binary(name) do
     arguments = params["arguments"] || %{}
 
     with {:ok, tool} <- fetch_tool(registry, name),
          :ok <- check_arguments(tool, arguments) do
-      {:ok, run_tool(registry, tool, arguments)}
+      {:ok, run_tool(registry, tool, arguments, context)}
     end
   end
 
-  defp call_tool(_registry, _params),
+  defp call_tool(_registry, _params, _context),
     do: {:error, @invalid_params, "tools/call needs a tool \"name\""}
 
   defp fetch_tool(registry, name) do
@@ -171,7 +194,7 @@ defmodule DDD.MCP do
     end
   end
 
-  defp run_tool(%Registry{read_only: true}, %{kind: :command, name: name}, _arguments) do
+  defp run_tool(%Registry{read_only: true}, %{kind: :command, name: name}, _arguments, _context) do
     tool_error(
       Error.business(
         code: :read_only,
@@ -180,8 +203,8 @@ defmodule DDD.MCP do
     )
   end
 
-  defp run_tool(registry, tool, arguments) do
-    case authorize(registry, tool.name, arguments) do
+  defp run_tool(registry, tool, arguments, context) do
+    case authorize(registry, tool.name, arguments, context) do
       :ok -> execute(tool, arguments)
       {:error, error} -> tool_error(error)
     end
@@ -253,10 +276,10 @@ defmodule DDD.MCP do
 
   # ── Authorization ─────────────────────────────────────────────────────────
 
-  defp authorize(%Registry{authorize: nil}, _name, _arguments), do: :ok
+  defp authorize(%Registry{authorize: nil}, _name, _arguments, _context), do: :ok
 
-  defp authorize(%Registry{authorize: fun}, name, arguments) do
-    case fun.(name, arguments) do
+  defp authorize(%Registry{authorize: fun}, name, arguments, context) do
+    case run_hook(fun, name, arguments, context) do
       :ok ->
         :ok
 
@@ -270,6 +293,12 @@ defmodule DDD.MCP do
         {:error, Error.business(code: :not_authorized, message: "Not allowed.")}
     end
   end
+
+  # A hook of two arguments (`name, arguments`) is as before; one of three also gets the context.
+  defp run_hook(fun, name, arguments, context) when is_function(fun, 3),
+    do: fun.(name, arguments, context)
+
+  defp run_hook(fun, name, arguments, _context), do: fun.(name, arguments)
 
   defp refusal(reason) when is_binary(reason), do: reason
   defp refusal(_reason), do: "Not allowed."
@@ -304,9 +333,9 @@ defmodule DDD.MCP do
     }
   end
 
-  defp read_resource(registry, %{"uri" => uri}) when is_binary(uri) do
+  defp read_resource(registry, %{"uri" => uri}, context) when is_binary(uri) do
     with {:ok, entity, rest} <- locate(registry, uri),
-         :ok <- authorize_read(registry, entity, uri),
+         :ok <- authorize_read(registry, entity, uri, context),
          {:ok, value} <- read(entity, rest, uri) do
       {:ok,
        %{
@@ -317,7 +346,7 @@ defmodule DDD.MCP do
     end
   end
 
-  defp read_resource(_registry, _params),
+  defp read_resource(_registry, _params, _context),
     do: {:error, @invalid_params, "resources/read needs a \"uri\""}
 
   defp locate(registry, uri) do
@@ -329,8 +358,8 @@ defmodule DDD.MCP do
     end
   end
 
-  defp authorize_read(registry, entity, uri) do
-    case authorize(registry, "resource:" <> entity.name, %{"uri" => uri}) do
+  defp authorize_read(registry, entity, uri, context) do
+    case authorize(registry, "resource:" <> entity.name, %{"uri" => uri}, context) do
       :ok -> :ok
       {:error, error} -> {:error, @denied, error.message}
     end

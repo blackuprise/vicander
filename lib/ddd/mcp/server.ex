@@ -54,8 +54,12 @@ defmodule DDD.MCP.Server do
         end
       end
 
-      @doc "Handle one decoded JSON-RPC message: `{:reply, response}` or `:noreply`."
-      def handle(message), do: DDD.MCP.handle(registry(), message)
+      @doc """
+      Handle one decoded JSON-RPC message: `{:reply, response}` or `:noreply`. `context` says who
+      is asking (see `DDD.MCP.HTTP`); it is the third argument of an `authorize:` function that
+      takes three.
+      """
+      def handle(message, context \\ %{}), do: DDD.MCP.handle(registry(), message, context)
 
       @doc """
       Serve MCP on standard input and output until the input ends. Options: `:read_only`

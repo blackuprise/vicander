@@ -638,10 +638,49 @@ claude mcp add todo -- mix vic.mcp MyApp.Interface.MCP
   error saying what was wrong.
 * **Access.** `read_only: true` (or `--read-only`) refuses every command. `authorize:` is called
   with `(tool_name, arguments)` before each tool call, and with `("resource:<name>", %{"uri" => uri})`
-  before each resource read; return `:ok` or `{:error, reason}`.
+  before each resource read; return `:ok` or `{:error, reason}`. A function of three arguments also
+  gets the *context* of the caller, which an HTTP transport fills in (see below); over stdio it is
+  `%{}`, because one process is one client.
 * **Stdio hygiene.** Standard output carries only protocol messages. The task moves the logger to
   standard error and turns the SQL log and the outbox poller off. Run `mix compile` first, because
   Mix prints its compile output on standard output when sources changed.
+
+### MCP over HTTP
+
+Stdio is one client per process, started by that client. To serve many clients, remotely and each
+as itself, mount `DDD.MCP.HTTP` (a Plug; the Plug package is optional for vicander and already
+there in a Phoenix or Plug application):
+
+```elixir
+forward "/mcp", DDD.MCP.HTTP,
+  server: MyApp.Interface.MCP,
+  authenticate: &MyApp.MCPAuth.authenticate/1,
+  resource_metadata: "https://shop.example.com/.well-known/oauth-protected-resource/mcp",
+  allowed_origins: []
+```
+
+`POST` takes a JSON-RPC message and answers with the JSON reply (`202` for a notification). There
+is no streaming and no session, so any node can answer. A web page can not drive the server:
+a request with an `Origin` header is refused unless the origin is listed.
+
+**Who is asking is the application's business.** MCP's authorization is OAuth 2.1: the client
+sends `Authorization: Bearer <token>`, and a client without one learns from the `401` where to log
+in (`resource_metadata`, RFC 9728). Issuing tokens, or trusting another server's, is the
+application's, because it knows its users. The transport only asks: `authenticate` takes the
+token and answers `{:ok, context}` (a map saying who it is) or `{:error, :invalid_token}`. The
+context is the third argument of `authorize:`, so one rule decides for stdio and HTTP alike:
+
+```elixir
+def authorize("restock_product", _arguments, %{role: :admin}), do: :ok
+def authorize("restock_product", _arguments, _context), do: {:error, "Admins only."}
+def authorize(_tool, _arguments, _context), do: :ok
+```
+
+What depends on the token and not on the user, such as the scope a tool needs, goes in the optional
+`authorize_request` (`fn message, context -> :ok | {:error, {:insufficient_scope, "write"}} end`),
+which answers `403` with `WWW-Authenticate: ... error="insufficient_scope"` so the client can ask
+the user for more. `authenticate: :none` serves without authentication, for local development
+only; leaving `authenticate:` out is an error.
 
 ## Migrations
 

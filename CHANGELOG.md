@@ -3,6 +3,24 @@
 All notable changes to `vicander` (the `DDD.*` modules). The project follows
 [Semantic Versioning](https://semver.org); until 1.0, a minor version may change the API.
 
+## 0.4.0 - 2026-11-12
+
+### Added
+
+* **MCP over HTTP: `DDD.MCP.HTTP`**, a Plug that serves a `DDD.MCP.Server` to many remote clients
+  (`POST` of one JSON-RPC message, a JSON reply, `202` for notifications; no streaming, no
+  session). It refuses other methods (`405`), batches, an unsupported `MCP-Protocol-Version`
+  (`400`) and an `Origin` that is not in `allowed_origins` (`403`, against DNS rebinding).
+  Authentication is the application's: `authenticate:` (required; `:none` for development) turns
+  a bearer token into a context or `{:error, :invalid_token}`, and a missing or invalid token gets
+  `401` with a `WWW-Authenticate: Bearer` header carrying `resource_metadata` (RFC 9728). The
+  optional `authorize_request:` answers `403 insufficient_scope` for what the token's scope
+  forbids. `plug` is an optional dependency.
+* **The caller's context reaches `authorize:`.** A function of three arguments,
+  `(tool, arguments, context)`, gets what the transport knows about who is asking. A function of
+  two arguments works as before, and `handle/2` of a server takes the context (`%{}` over stdio).
+  `DDD.MCP.protocol_versions/0` lists the versions the server speaks.
+
 ## 0.3.0 - 2026-11-11
 
 ### Breaking
@@ -21,7 +39,7 @@ All notable changes to `vicander` (the `DDD.*` modules). The project follows
   `json_load/2`. A value that does not load (a row written by hand, or before the field had its
   type) is delivered as stored, with a warning. Code that matched the old text form must change.
   An event that changes in a way old rows can not be read as gets a new module (`OrderPlacedV2`).
-* **`DDD.InMemoryRepository.count/0` and `all/0` raise after a save in a unit of work**, as the
+* **An in-memory repository's `count` and `all` raise after a save in a unit of work**, as the
   Ecto adapter's queries do (`DDD.UnitOfWork.PendingChangesError`). A test that saved and then
   counted passed against the in-memory repository and failed in production; now it fails in both.
 
