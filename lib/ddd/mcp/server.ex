@@ -24,14 +24,18 @@ defmodule DDD.MCP.Server do
     * `read_only: true` refuses every command tool.
     * `authorize:` is a function `(name, arguments) -> :ok | {:error, reason}` called before
       each tool call (with the tool's name) and resource read (with `"resource:<name>"` and
-      `%{"uri" => uri}`).
+      `%{"uri" => uri}`). A function of three arguments, `(name, arguments, context)`, also gets
+      the context of the caller: what an authenticating transport (`DDD.MCP.HTTP`) learned about
+      who is asking, or `%{}` over stdio. Anything that is not a function of two or three
+      arguments raises when the server is built.
     * `name:`, `version:` and `instructions:` are reported to the client.
 
   Every exposed module needs a `description`. A missing one, or two tools with the same name,
   raises when the server is built (at startup), not when a client calls.
 
-  The module gets `handle/1` (one decoded JSON-RPC message), `serve/1` (the stdio loop) and
-  `registry/0`. Run it with `mix vic.mcp MyApp.Interface.MCP`.
+  The module gets `handle/1,2` (one decoded JSON-RPC message, and who is asking), `serve/1` (the
+  stdio loop) and `registry/0`. Run it with `mix vic.mcp MyApp.Interface.MCP` for stdio, or mount
+  `DDD.MCP.HTTP` in a router to serve it over HTTP.
   """
 
   defmacro __using__(opts) do

@@ -77,6 +77,24 @@ defmodule DDD.MCPHTTPTest do
   defp json(conn), do: Jason.decode!(conn.resp_body)
   defp header(conn, name), do: conn |> get_resp_header(name) |> List.first()
 
+  describe "the authorize option of a server" do
+    alias DDD.MCP.Registry
+
+    test "is a function of two or three arguments, or nothing" do
+      for hook <- [nil, fn _, _ -> :ok end, fn _, _, _ -> :ok end] do
+        assert %Registry{} = Registry.build!(DDD.Test.MCPServer, authorize: hook)
+      end
+    end
+
+    test "anything else raises when the server is built, not on a client's first call" do
+      for hook <- [fn _ -> :ok end, fn _, _, _, _ -> :ok end, :nope, "hook", {Hook, :authorize}] do
+        assert_raise ArgumentError, ~r/`authorize:` must be a function of two arguments/, fn ->
+          Registry.build!(DDD.Test.MCPServer, authorize: hook)
+        end
+      end
+    end
+  end
+
   describe "configuration" do
     test "needs an `authenticate:`, and `:none` has to be asked for" do
       assert_raise ArgumentError, ~r/needs `authenticate:`/, fn ->

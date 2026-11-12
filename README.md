@@ -642,8 +642,9 @@ claude mcp add todo -- mix vic.mcp MyApp.Interface.MCP
   gets the *context* of the caller, which an HTTP transport fills in (see below); over stdio it is
   `%{}`, because one process is one client.
 * **Stdio hygiene.** Standard output carries only protocol messages. The task moves the logger to
-  standard error and turns the SQL log and the outbox poller off. Run `mix compile` first, because
-  Mix prints its compile output on standard output when sources changed.
+  standard error (before the application starts, so the outbox poller still runs when it is
+  configured) and turns the SQL log off. Run `mix compile` first, because Mix prints its compile
+  output on standard output when sources changed.
 
 ### MCP over HTTP
 
@@ -660,8 +661,9 @@ forward "/mcp", DDD.MCP.HTTP,
 ```
 
 `POST` takes a JSON-RPC message and answers with the JSON reply (`202` for a notification). There
-is no streaming and no session, so any node can answer. A web page can not drive the server:
-a request with an `Origin` header is refused unless the origin is listed.
+is no streaming and no session, so any node can answer, and no batching (removed from the protocol
+in 2025-06-18; a batch gets `400`). A web page can not drive the server: a request with an
+`Origin` header is refused unless the origin is listed.
 
 **Who is asking is the application's business.** MCP's authorization is OAuth 2.1: the client
 sends `Authorization: Bearer <token>`, and a client without one learns from the `401` where to log

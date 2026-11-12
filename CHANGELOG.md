@@ -19,7 +19,14 @@ All notable changes to `vicander` (the `DDD.*` modules). The project follows
 * **The caller's context reaches `authorize:`.** A function of three arguments,
   `(tool, arguments, context)`, gets what the transport knows about who is asking. A function of
   two arguments works as before, and `handle/2` of a server takes the context (`%{}` over stdio).
-  `DDD.MCP.protocol_versions/0` lists the versions the server speaks.
+  `authorize:` is checked when the server is built: anything but a function of two or three
+  arguments raises then, not on a client's first call. `DDD.MCP.protocol_versions/0` lists the
+  versions the server speaks.
+
+### Fixed
+
+* The README said `mix vic.mcp` turns the outbox poller off; it never did (it sends the logger
+  to standard error before the application starts so that a configured poller can run).
 
 ## 0.3.0 - 2026-11-11
 

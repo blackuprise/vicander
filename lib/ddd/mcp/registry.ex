@@ -48,10 +48,20 @@ defmodule DDD.MCP.Registry do
       version: Keyword.get_lazy(opts, :version, fn -> app_version(server) end),
       instructions: Keyword.get(opts, :instructions),
       read_only: Keyword.get(opts, :read_only, false),
-      authorize: Keyword.get(opts, :authorize),
+      authorize: authorize!(Keyword.get(opts, :authorize)),
       tools: unique!(commands ++ queries, "tool"),
       repos: unique!(repos, "resource")
     }
+  end
+
+  # A hook that can not be called is found when the server is built, not on a client's first call.
+  defp authorize!(nil), do: nil
+  defp authorize!(fun) when is_function(fun, 2) or is_function(fun, 3), do: fun
+
+  defp authorize!(other) do
+    raise ArgumentError,
+          "`authorize:` must be a function of two arguments (tool, arguments) or three " <>
+            "(tool, arguments, context), got: #{inspect(other)}"
   end
 
   # ── Tools ─────────────────────────────────────────────────────────────────

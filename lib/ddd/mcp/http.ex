@@ -16,8 +16,9 @@ defmodule DDD.MCP.HTTP do
     * `POST` takes one JSON-RPC message and answers `200` with the JSON reply, or `202` with
       no body for a notification or a client's response. It does not stream and keeps no
       session, so any node can answer any request.
-    * Every other method gets `405`. A batch (a JSON array) is refused, as the protocol
-      versions this server speaks do not use them.
+    * Every other method gets `405`. A batch (a JSON array) gets `400`: the 2025-06-18
+      revision of the protocol removed batching, and this transport does not take it. A client
+      that negotiated `2025-03-26` and batches therefore can not use this transport.
     * A request whose `MCP-Protocol-Version` header names a version the server does not speak
       gets `400`.
     * An `Origin` header that is not in `:allowed_origins` gets `403`, so a web page cannot
@@ -93,6 +94,8 @@ defmodule DDD.MCP.HTTP do
       respond(conn, opts.server, message, context)
     else
       {:error, status, headers, body} -> send_json(conn, status, body, headers)
+      # Once the body is read the connection has moved on; a reply must use the one it returned.
+      {:error, status, headers, body, conn} -> send_json(conn, status, body, headers)
     end
   end
 
@@ -208,7 +211,7 @@ defmodule DDD.MCP.HTTP do
   defp read_message(%{body_params: %{__struct__: Plug.Conn.Unfetched}} = conn) do
     case Conn.read_body(conn, length: @max_body) do
       {:ok, body, conn} -> decode(body, conn)
-      {:more, _partial, _conn} -> {:error, 413, [], rpc_error(-32_600, "Request too large")}
+      {:more, _partial, conn} -> {:error, 413, [], rpc_error(-32_600, "Request too large"), conn}
       {:error, _reason} -> {:error, 400, [], rpc_error(-32_700, "Could not read the request")}
     end
   end
@@ -224,8 +227,8 @@ defmodule DDD.MCP.HTTP do
   defp decode(body, conn) do
     case Jason.decode(body) do
       {:ok, %{} = message} -> {:ok, message, conn}
-      {:ok, _array_or_scalar} -> {:error, 400, [], rpc_error(-32_600, "Invalid Request")}
-      {:error, _} -> {:error, 400, [], DDD.MCP.parse_error()}
+      {:ok, _array_or_scalar} -> {:error, 400, [], rpc_error(-32_600, "Invalid Request"), conn}
+      {:error, _} -> {:error, 400, [], DDD.MCP.parse_error(), conn}
     end
   end
 

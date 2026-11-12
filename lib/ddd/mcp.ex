@@ -4,7 +4,7 @@ defmodule DDD.MCP do
   client can call its commands and queries as tools and read its aggregates as resources.
 
   This module is the protocol core. It takes one decoded JSON-RPC message and returns the reply,
-  so a transport (`DDD.MCP.Stdio`, or an HTTP Plug later) only moves JSON. Use it through a
+  so a transport (`DDD.MCP.Stdio`, or `DDD.MCP.HTTP`) only moves JSON. Use it through a
   server module (`DDD.MCP.Server`).
 
   ## What is exposed
